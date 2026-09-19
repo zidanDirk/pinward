@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#163d40" />
+    <meta
+      name="description"
+      content="弹珠防线 Pinward：放置反弹器，让弹球守住防线。12 波怪物、三阶段章鱼 BOSS，一局五分钟的弹球策略游戏。"
+    />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./style.css" />
+    <title>PINWARD · 弹珠防线</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./" aria-label="Pinward 首页"
+        ><svg viewBox="0 0 36 36" aria-hidden="true">
+          <path d="M7 29 20 16M17 29l12-12" />
+          <circle cx="11" cy="10" r="5" /></svg
+        ><span>PINWARD<span class="brand-dot">®</span></span></a
+      >
+      <div class="header-note">
+        弹球 × 构筑 × 塔防<span>一颗弹球，无数种可能。</span>
+      </div>
+      <div class="header-actions">
+        <span class="stars">✦ <b id="stars">0</b><span> 星币</span></span
+        ><button
+          class="icon-button"
+          id="sound"
+          aria-label="开启声音"
+          aria-pressed="false"
+          title="声音"
+        >
+          ♪</button
+        ><button
+          class="icon-button"
+          id="help"
+          aria-label="操作说明"
+          title="操作说明"
+        >
+          ?
+        </button>
+      </div>
+    </header>
+
+    <main class="game-layout">
+      <aside class="mission-panel">
+        <div class="eyebrow">
+          <span class="status-dot"></span> CHAPTER 01 / 潮汐来袭
+        </div>
+        <h1>弹珠防线<span>让环境，成为武器。</span></h1>
+        <p class="intro">
+          布下反弹器，串起你的弹道。<br />把每一只怪物，送回潮水里。
+        </p>
+        <section class="telemetry" aria-label="战况">
+          <div class="stat-line">
+            <span>当前波次</span
+            ><span class="micro" id="phase-label">准备布阵</span>
+          </div>
+          <div class="wave-number">
+            <b id="wave">01</b><span>/ 12</span
+            ><svg viewBox="0 0 48 32" aria-hidden="true">
+              <path d="m2 25 13-13 10 10L45 2M31 2h14v14" />
+            </svg>
+          </div>
+          <div id="wave-dots" class="wave-dots" aria-hidden="true"></div>
+          <div class="stat-line hp-label">
+            <span>基地完整度</span><b id="hp">10 / 10</b>
+          </div>
+          <div id="hp-pips" class="hp-pips" aria-hidden="true"></div>
+          <div class="score-row">
+            <div><span>本局得分</span><strong id="score">000000</strong></div>
+            <span class="score-mark">↗</span>
+          </div>
+          <div class="best-line"><span>个人最高</span><b id="best">0</b></div>
+        </section>
+        <div class="mission-bottom">
+          <span class="tiny-label">FIELD NOTES</span>
+          <p id="field-note">
+            先从两块标准反弹器开始。<br />好角度，比数量更重要。
+          </p>
+          <button class="text-button" id="upgrades">
+            永久升级 <span>↗</span></button
+          ><button class="text-button" id="records">
+            本地战绩 <span>↗</span>
+          </button>
+        </div>
+      </aside>
+
+      <section class="arena-column" aria-label="弹球台">
+        <div class="arena-topline">
+          <span><i></i> <span id="board-status">SYSTEM READY</span></span
+          ><span id="timer">00:00</span>
+        </div>
+        <div class="cabinet" id="cabinet">
+          <canvas
+            id="board"
+            width="540"
+            height="840"
+            tabindex="0"
+            aria-label="9 列 14 行弹球台。方向键移动光标，回车放置，R 旋转，Delete 回收。"
+          ></canvas>
+          <div class="board-corner tl"></div>
+          <div class="board-corner tr"></div>
+          <div class="board-corner bl"></div>
+          <div class="board-corner br"></div>
+          <div class="start-overlay" id="start-overlay">
+            <span class="start-tag">准备好，迎接第一波。</span>
+            <h2>一球入场。<br />全场反击。</h2>
+            <p>自动发射弹球 · 自由构筑防线</p>
+            <div id="start-choice" hidden>
+              <label for="initial-type">初始配置</label
+              ><select id="initial-type">
+                <option value="standard">双标准 · 稳定弹道</option>
+                <option value="frost">冰冻 + 标准 · 减速拦截</option>
+              </select>
+            </div>
+            <button id="start" class="primary-button">
+              开始防守 <span>↗</span>
+            </button>
+            <span class="start-footnote">12 波 + BOSS / 约 5 分钟</span>
+          </div>
+          <div class="pause-overlay" id="pause-overlay" hidden>
+            <span class="eyebrow">TAKE A BREATH</span>
+            <h2>防线已暂停</h2>
+            <p>你的下一次反弹，值得好好想想。</p>
+            <button class="primary-button" id="resume">
+              继续防守 <span>▶</span>
+            </button>
+          </div>
+          <div
+            class="boss-banner"
+            id="boss-banner"
+            hidden
+            aria-live="polite"
+          ></div>
+          <div class="toast" id="toast" role="status"></div>
+        </div>
+        <div class="arena-toolbar">
+          <div>
+            <span class="pulse-dot"></span
+            ><span id="launch-status">发射器待命</span>
+          </div>
+          <button
+            id="pause"
+            class="pause-button"
+            disabled
+            aria-label="暂停游戏"
+          >
+            Ⅱ <span>暂停</span>
+          </button>
+        </div>
+        <div class="aim-controls">
+          <label for="aim">发射角度</label
+          ><input
+            id="aim"
+            type="range"
+            min="-15"
+            max="15"
+            step="1"
+            value="0"
+          /><output id="aim-value">0°</output
+          ><button id="aim-confirm" title="锁定下一球角度（空格）">
+            锁定下一球
+          </button>
+        </div>
+      </section>
+
+      <aside class="build-panel">
+        <div class="build-title">
+          <div>
+            <span class="tiny-label">YOUR LOADOUT</span>
+            <h2>反弹器工坊</h2>
+          </div>
+          <span id="bumper-count">02<span> / 18</span></span>
+        </div>
+        <div class="tool-switch" role="group" aria-label="棋盘操作">
+          <button data-tool="place" class="active" aria-pressed="true">
+            ＋ 放置</button
+          ><button data-tool="rotate" aria-pressed="false">↻ 旋转</button
+          ><button data-tool="remove" aria-pressed="false">－ 回收</button>
+        </div>
+        <div id="inventory" class="inventory" aria-label="反弹器库存"></div>
+        <div class="selected-detail">
+          <span id="detail-material" class="tiny-label">木质反弹器</span>
+          <p id="detail-text">改变弹道。45° 反射，让每一次碰撞都有价值。</p>
+          <span id="detail-effect">命中击退 1 格</span>
+        </div>
+        <div class="control-note">
+          <span class="tiny-label">A LITTLE STRATEGY</span>
+          <p>选中反弹器后，点击网格放置。<br />波次结束后，选一张新卡牌。</p>
+          <div><kbd>Alt</kbd> 点击旋转 <span>·</span> 右键回收</div>
+          <div><kbd>空格</kbd> 锁定角度 <span>·</span> <kbd>P</kbd> 暂停</div>
+          <p class="touch-note">
+            触屏：长按 0.8 秒旋转；双指长按回收。也可切换上方工具后单击。
+          </p>
+        </div>
+      </aside>
+    </main>
+    <footer class="site-footer">
+      <span>BUILD A PATH. HOLD THE LINE.</span>
+      <nav aria-label="游戏记录与成长">
+        <button id="mobile-upgrades" class="text-button">永久升级 ↗</button
+        ><button id="mobile-records" class="text-button">本地战绩 ↗</button>
+      </nav>
+      <span>每次反弹，都是一次转机。 <span class="footer-ball">●</span></span>
+    </footer>
+
+    <dialog id="reward-dialog" aria-labelledby="reward-title">
+      <div class="modal-top">
+        <span class="eyebrow" id="reward-wave">WAVE CLEAR</span
+        ><span class="countdown"
+          ><b id="reward-seconds">6</b>s 后自动选择第一张</span
+        >
+      </div>
+      <h2 id="reward-title">让防线，多一种可能。</h2>
+      <p class="modal-description">
+        选择一块反弹器，加入本局库存。下一波即将到来。
+      </p>
+      <div id="reward-cards" class="reward-cards"></div>
+      <div class="reward-bottom">
+        <span>获得后，点击棋盘空格放置。</span
+        ><button id="reward-resume" class="text-button" hidden>
+          继续选牌倒计时 ▶</button
+        ><button id="reroll" class="text-button" hidden>重新抽取三张 ↻</button>
+      </div>
+      <div class="countdown-track"><i id="reward-progress"></i></div>
+    </dialog>
+    <dialog id="result-dialog" aria-labelledby="result-title">
+      <span class="eyebrow" id="result-tag">RUN COMPLETE</span>
+      <div class="result-emblem" id="result-emblem">↗</div>
+      <h2 id="result-title">潮水退去，防线仍在。</h2>
+      <p id="result-description"></p>
+      <div class="result-stats">
+        <div><span>本局得分</span><b id="result-score"></b></div>
+        <div><span>抵达波次</span><b id="result-wave"></b></div>
+        <div><span>获得星币</span><b id="result-stars"></b></div>
+      </div>
+      <p id="result-tip" class="result-tip"></p>
+      <button class="primary-button" id="restart">
+        再守一局 <span>↻</span></button
+      ><button class="text-button" id="back-to-build">返回工坊</button>
+    </dialog>
+    <dialog id="help-dialog" aria-labelledby="help-title">
+      <button
+        class="close-button"
+        data-close="help-dialog"
+        aria-label="关闭说明"
+      >
+        ×</button
+      ><span class="eyebrow">HOW TO HOLD THE LINE</span>
+      <h2 id="help-title">布阵。反弹。守住。</h2>
+      <ol class="instructions">
+        <li>
+          <b>环境就是你的武器</b>
+          <p>
+            两块标准反弹器已就位。每 4
+            秒自动发球，撞击怪物造成伤害并向上击退。碰撞反弹器会赋予弹球对应能力。
+          </p>
+        </li>
+        <li>
+          <b>波次之间，选择进化</b>
+          <p>
+            撑过一波，三选一获得反弹器。6
+            秒未选会自动取第一张；点击空格放置，旋转改变路线，回收返还库存。
+          </p>
+        </li>
+        <li>
+          <b>迎接深海来客</b>
+          <p>
+            守住 12
+            波后挑战三阶段章鱼：吞噬禁用反弹器、潮群召唤援军、重潮改变重力。BOSS
+            每 12 秒冲击基地，尽快击败它。
+          </p>
+        </li>
+      </ol>
+      <div class="key-guide">
+        <p>
+          <kbd>方向键</kbd> 棋盘光标 <kbd>Enter</kbd> 放置 <kbd>R</kbd> 旋转
+          <kbd>Delete</kbd> 回收
+        </p>
+        <p>
+          <kbd>Alt + 点击</kbd> 旋转 <kbd>右键</kbd> 回收
+          <kbd>空格</kbd> 锁定角度 <kbd>P</kbd> 暂停
+        </p>
+        <p>
+          手机可用「旋转 / 回收」工具单击操作，或长按 0.8
+          秒旋转、双指长按回收。发射角度使用滑块调整。
+        </p>
+        <p>
+          怪物触底扣 1 点血，基地共 10
+          点血。切到后台自动暂停。星币可永久解锁额外初始反弹器及初始配置二选一。
+        </p>
+      </div>
+    </dialog>
+    <dialog id="upgrade-dialog" aria-labelledby="upgrade-title">
+      <button
+        class="close-button"
+        data-close="upgrade-dialog"
+        aria-label="关闭升级"
+      >
+        ×</button
+      ><span class="eyebrow">A LITTLE STRONGER, EVERY RUN</span>
+      <h2 id="upgrade-title">为下一局，留一点优势。</h2>
+      <p class="modal-description">星币跨局保留。升级于新的一局生效。</p>
+      <div id="upgrade-options"></div>
+      <p id="upgrade-status" role="status"></p>
+    </dialog>
+    <dialog id="records-dialog" aria-labelledby="records-title">
+      <button
+        class="close-button"
+        data-close="records-dialog"
+        aria-label="关闭战绩"
+      >
+        ×</button
+      ><span class="eyebrow">LOCAL RECORDS</span>
+      <h2 id="records-title">那些漂亮的反击。</h2>
+      <div id="record-list"></div>
+      <p class="modal-description">战绩仅保存在此浏览器，记录最高的五局。</p>
+    </dialog>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
