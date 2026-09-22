@@ -250,13 +250,10 @@ cmd_split() {
   local issues
   issues="$(list_issues "$LABEL_APPROVED")"
   local todo
-  todo="$(jq -c --argjson target "${TARGET_ISSUE:-0}" '
-    [ .[]
-      | select(([.labels[].name] | index("子任务")) == null)
-      | select(([.labels[].name] | index("已拆分")) == null)
-      | select(([.labels[].name] | index("AI失败")) == null)
-      | select($target == 0 or .number == $target)
-    ] | sort_by(.number)' <<<"$issues")"
+  todo="$(select_parent_issues "$issues" "${TARGET_ISSUE:-0}")"
+  if [ -n "${TARGET_ISSUE:-}" ]; then
+    log "已显式指定 --issue ${TARGET_ISSUE}，忽略「${LABEL_FAILED}」过滤"
+  fi
 
   local count
   count="$(jq 'length' <<<"$todo")"
@@ -552,12 +549,10 @@ cmd_implement() {
 
   local issues todo count
   issues="$(list_issues "$LABEL_APPROVED")"
-  todo="$(jq -c --argjson target "${TARGET_ISSUE:-0}" '
-    [ .[]
-      | select(([.labels[].name] | index("子任务")) != null)
-      | select(([.labels[].name] | index("AI失败")) == null)
-      | select($target == 0 or .number == $target)
-    ] | sort_by(.number)' <<<"$issues")"
+  todo="$(select_child_issues "$issues" "${TARGET_ISSUE:-0}")"
+  if [ -n "${TARGET_ISSUE:-}" ]; then
+    log "已显式指定 --issue ${TARGET_ISSUE}，忽略「${LABEL_FAILED}」过滤"
+  fi
 
   count="$(jq 'length' <<<"$todo")"
   local cap="${LIMIT:-$MAX_CHILDREN_PER_DAY}"

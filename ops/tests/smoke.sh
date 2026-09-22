@@ -266,6 +266,32 @@ out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; outside_w
 [ -z "$out" ]
 check "全部落在工作目录内时返回空" ok $?
 
+echo "== 候选过滤与 --issue 覆盖 =="
+cat > "$TMP/issues.json" <<'EOF'
+[
+ {"number":6,"labels":[{"name":"同意实现"},{"name":"子任务"}]},
+ {"number":7,"labels":[{"name":"同意实现"},{"name":"子任务"},{"name":"AI失败"}]},
+ {"number":8,"labels":[{"name":"同意实现"}]},
+ {"number":9,"labels":[{"name":"同意实现"},{"name":"子任务"}]},
+ {"number":10,"labels":[{"name":"同意实现"},{"name":"已拆分"}]}
+]
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; select_child_issues "$(cat "$2")" 0' _ "$LIB" "$TMP/issues.json" 2>/dev/null | jq -c '[.[].number]')"
+[ "$out" = "[6,9]" ]
+check "批量模式跳过 AI失败，只取子任务，升序" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; select_child_issues "$(cat "$2")" 7' _ "$LIB" "$TMP/issues.json" 2>/dev/null | jq -c '[.[].number]')"
+[ "$out" = "[7]" ]
+check "--issue 7 时忽略 AI失败，可重试" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; select_parent_issues "$(cat "$2")" 0' _ "$LIB" "$TMP/issues.json" 2>/dev/null | jq -c '[.[].number]')"
+[ "$out" = "[8]" ]
+check "父 issue 过滤排除子任务与已拆分" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; select_child_issues "$(cat "$2")" 8' _ "$LIB" "$TMP/issues.json" 2>/dev/null | jq -c '[.[].number]')"
+[ "$out" = "[]" ]
+check "--issue 指向非子任务时为空（不误做父 issue）" ok $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?
