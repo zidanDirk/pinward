@@ -1,0 +1,265 @@
+{
+  "_readme": [
+    "Pinward 资讯源配置。所有源均在真实网络下实测可通后才写入本文件。",
+    "字段说明：",
+    "  id            唯一标识，出现在日志与 digest.json.failures 里",
+    "  label         人类可读名字，出现在 digest.md 的「来源」位置",
+    "  type          rss（默认，RSS 2.0 / Atom 通用解析）| google-news（由 query 拼 URL）| hn（Algolia JSON）",
+    "  query         仅 type=google-news 使用；hl/gl/ceid 可选，默认 en-US / US",
+    "  url           直接给出 feed 地址（type=rss / hn）",
+    "  category      digest.md 的分组：玩法与设计 / 竞品动态 / 技术 / UI 与美术 / 手感与特效 / 行业动态",
+    "  maxItems      单个源最多取多少条，默认由 defaults.maxItemsPerSource 决定",
+    "  maxAgeHours   可选，覆盖该源的全局 --hours；出厂配置故意不启用（时间窗对所有源一视同仁）",
+    "  optional      true 表示失败即静默跳过（只写 digest.json.optionalFailures），不进 digest.md 的失败小节",
+    "  enabled       false 可临时停用某个源",
+    "  delayMs       抓取前等待毫秒数，用于给 Reddit 这类有速率限制的站点错峰"
+  ],
+  "defaults": {
+    "timeoutMs": 20000,
+    "maxItemsPerSource": 25
+  },
+  "sources": [
+    {
+      "id": "gnews-roguelike-design",
+      "label": "Google News · roguelike game design",
+      "type": "google-news",
+      "query": "roguelike game design",
+      "category": "玩法与设计",
+      "maxItems": 20
+    },
+    {
+      "id": "gnews-pinball-roguelike",
+      "label": "Google News · pinball roguelike",
+      "type": "google-news",
+      "query": "pinball roguelike",
+      "category": "玩法与设计",
+      "maxItems": 20
+    },
+    {
+      "id": "gnews-tower-defense",
+      "label": "Google News · tower defense game",
+      "type": "google-news",
+      "query": "tower defense game",
+      "category": "玩法与设计",
+      "maxItems": 20
+    },
+    {
+      "id": "gnews-deckbuilder",
+      "label": "Google News · roguelike deckbuilder",
+      "type": "google-news",
+      "query": "roguelike deckbuilder",
+      "category": "玩法与设计",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-cn-marble",
+      "label": "Google News · 弹珠游戏（中文）",
+      "type": "google-news",
+      "query": "弹珠游戏",
+      "hl": "zh-CN",
+      "gl": "CN",
+      "ceid": "CN:zh-Hans",
+      "category": "玩法与设计",
+      "maxItems": 15
+    },
+    {
+      "id": "hn-roguelike",
+      "label": "Hacker News · roguelike",
+      "type": "hn",
+      "url": "https://hn.algolia.com/api/v1/search_by_date?query=%22roguelike%22&tags=story&numericFilters=points%3E10&hitsPerPage=30&advancedSyntax=true",
+      "category": "玩法与设计",
+      "maxItems": 15
+    },
+    {
+      "id": "reddit-roguelikes",
+      "label": "Reddit · r/roguelikes",
+      "type": "rss",
+      "url": "https://www.reddit.com/r/roguelikes/top/.rss?t=day&limit=15",
+      "category": "玩法与设计",
+      "maxItems": 15,
+      "optional": true,
+      "delayMs": 1500
+    },
+
+    {
+      "id": "steam-peglin",
+      "label": "Steam · Peglin",
+      "type": "rss",
+      "url": "https://store.steampowered.com/feeds/news/app/1296610/?cc=us&l=english",
+      "category": "竞品动态",
+      "maxItems": 8
+    },
+    {
+      "id": "steam-ballxpit",
+      "label": "Steam · BALL x PIT",
+      "type": "rss",
+      "url": "https://store.steampowered.com/feeds/news/app/2062430/?cc=us&l=english",
+      "category": "竞品动态",
+      "maxItems": 8
+    },
+    {
+      "id": "steam-ballionaire",
+      "label": "Steam · Ballionaire",
+      "type": "rss",
+      "url": "https://store.steampowered.com/feeds/news/app/2667120/?cc=us&l=english",
+      "category": "竞品动态",
+      "maxItems": 8
+    },
+    {
+      "id": "steam-domekeeper",
+      "label": "Steam · Dome Keeper",
+      "type": "rss",
+      "url": "https://store.steampowered.com/feeds/news/app/1637320/?cc=us&l=english",
+      "category": "竞品动态",
+      "maxItems": 8
+    },
+    {
+      "id": "steam-news-generic",
+      "label": "Steam · 全站新闻",
+      "type": "rss",
+      "url": "https://store.steampowered.com/feeds/news.xml",
+      "category": "竞品动态",
+      "maxItems": 10
+    },
+    {
+      "id": "gnews-ballxpit",
+      "label": "Google News · Ball x Pit",
+      "type": "google-news",
+      "query": "Ball x Pit",
+      "category": "竞品动态",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-peglin",
+      "label": "Google News · Peglin",
+      "type": "google-news",
+      "query": "Peglin",
+      "category": "竞品动态",
+      "maxItems": 10
+    },
+
+    {
+      "id": "gnews-html5-canvas",
+      "label": "Google News · html5 canvas game",
+      "type": "google-news",
+      "query": "html5 canvas game",
+      "category": "技术",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-web-game-dev",
+      "label": "Google News · web game development javascript",
+      "type": "google-news",
+      "query": "web game development javascript",
+      "category": "技术",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-indie-dev",
+      "label": "Google News · indie game development",
+      "type": "google-news",
+      "query": "indie game development",
+      "category": "技术",
+      "maxItems": 15
+    },
+    {
+      "id": "hn-game-engine",
+      "label": "Hacker News · game engine",
+      "type": "hn",
+      "url": "https://hn.algolia.com/api/v1/search_by_date?query=%22game%20engine%22&tags=story&numericFilters=points%3E20&hitsPerPage=30&advancedSyntax=true",
+      "category": "技术",
+      "maxItems": 15
+    },
+    {
+      "id": "media-gamedeveloper",
+      "label": "Game Developer",
+      "type": "rss",
+      "url": "https://www.gamedeveloper.com/rss.xml",
+      "category": "技术",
+      "maxItems": 20
+    },
+
+    {
+      "id": "gnews-indie-ui",
+      "label": "Google News · indie game UI design",
+      "type": "google-news",
+      "query": "indie game UI design",
+      "category": "UI 与美术",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-pixel-art",
+      "label": "Google News · pixel art game",
+      "type": "google-news",
+      "query": "pixel art game",
+      "category": "UI 与美术",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-mobile-ui",
+      "label": "Google News · mobile game ui ux",
+      "type": "google-news",
+      "query": "mobile game ui ux",
+      "category": "UI 与美术",
+      "maxItems": 15
+    },
+    {
+      "id": "media-80lv",
+      "label": "80.lv",
+      "type": "rss",
+      "url": "https://80.lv/feed/",
+      "category": "UI 与美术",
+      "maxItems": 8
+    },
+
+    {
+      "id": "gnews-game-feel",
+      "label": "Google News · game feel",
+      "type": "google-news",
+      "query": "game feel",
+      "category": "手感与特效",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-game-juice",
+      "label": "Google News · game juice",
+      "type": "google-news",
+      "query": "game juice",
+      "category": "手感与特效",
+      "maxItems": 15
+    },
+    {
+      "id": "gnews-hitstop",
+      "label": "Google News · hit stop game feel",
+      "type": "google-news",
+      "query": "hit stop game feel",
+      "category": "手感与特效",
+      "maxItems": 12
+    },
+
+    {
+      "id": "media-gamesindustry",
+      "label": "GamesIndustry.biz",
+      "type": "rss",
+      "url": "https://www.gamesindustry.biz/feed",
+      "category": "行业动态",
+      "maxItems": 8
+    },
+    {
+      "id": "media-rps",
+      "label": "Rock Paper Shotgun",
+      "type": "rss",
+      "url": "https://www.rockpapershotgun.com/feed",
+      "category": "行业动态",
+      "maxItems": 8
+    },
+    {
+      "id": "media-pcgamer",
+      "label": "PC Gamer",
+      "type": "rss",
+      "url": "https://www.pcgamer.com/rss/",
+      "category": "行业动态",
+      "maxItems": 8
+    }
+  ]
+}

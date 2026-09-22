@@ -1,0 +1,12 @@
+[Unit]
+Description=每天 10:30 用 MiniMax M3 实现子 issue 并提交 draft PR
+
+[Timer]
+Unit=pinward@implement.service
+OnCalendar=*-*-* 10:30:00
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

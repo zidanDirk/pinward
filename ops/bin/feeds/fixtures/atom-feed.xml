@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  离线样本：Atom 1.0（结构取自 Reddit / 80.lv 等真实 Atom feed）。
+  覆盖点：CDATA + HTML 实体、<link rel="alternate" href> 优先于其它 rel、
+         published 时间戳，以及「去标点后标题完全相同」的重复条目（验证标题去重）。
+-->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Game Feel Weekly</title>
+  <updated>2026-09-21T07:05:00Z</updated>
+  <id>https://example.com/atom</id>
+  <link rel="self" href="https://example.com/atom" type="application/atom+xml" />
+  <entry>
+    <title type="html"><![CDATA[Juice it or lose it: game feel basics!]]></title>
+    <link rel="replies" href="https://example.com/atom/replies/1" type="application/atom+xml" />
+    <link rel="alternate" href="https://example.com/posts/juice-it-or-lose-it?a=1&amp;b=2" type="text/html" />
+    <id>tag:example.com,2026:1</id>
+    <published>2026-09-21T07:00:00Z</published>
+    <updated>2026-09-21T07:05:00Z</updated>
+    <summary type="html">&lt;p&gt;Screen shake&amp;nbsp;与 hit-stop 的&lt;b&gt;剂量&lt;/b&gt;——为什么 60fps 下 80ms 的停顿最舒服。&lt;/p&gt;</summary>
+    <author><name>Feel Guy</name></author>
+  </entry>
+  <entry>
+    <title>Juice it or lose it game feel basics</title>
+    <link rel="alternate" href="https://example.com/posts/juice-duplicate" type="text/html" />
+    <id>tag:example.com,2026:2</id>
+    <updated>2026-09-20T07:00:00Z</updated>
+    <summary>同一篇文章的转载，标题去掉标点后一致，应当被标题去重丢弃。</summary>
+  </entry>
+  <entry>
+    <title>Canvas 2D 上做 2000 粒子的血条爆炸特效</title>
+    <link rel="alternate" href="https://example.com/posts/canvas-particles" type="text/html" />
+    <id>tag:example.com,2026:3</id>
+    <updated>2026-09-18T07:00:00Z</updated>
+    <summary><![CDATA[用 <code>globalCompositeOperation = 'lighter'</code> 叠加发光，&amp; 避免每帧分配数组。]]></summary>
+  </entry>
+</feed>

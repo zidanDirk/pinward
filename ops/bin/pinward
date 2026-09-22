@@ -1,0 +1,664 @@
+#!/usr/bin/env bash
+# PINWARD 自动化主入口。
+#
+#   pinward research   09:00 抓资讯 -> MiniMax M3 生成建议 -> 建 issue（未审核）
+#   pinward split      10:00 取「同意实现」-> DeepSeek flash 拆分 -> 建子 issue
+#   pinward implement  10:30 取「同意实现+子任务」-> MiniMax M3 实现 -> 每个子 issue 一个 draft PR
+#   pinward verify     11:30 对所有 ai/* PR 做集成试合并 + 测试，评论结果
+#   pinward all        依次执行上面四步
+#   pinward doctor     环境自检（输出可直接回贴的体检块）
+#   pinward status     当前状态总览
+#
+# 通用参数：--dry-run   --issue N   --limit N   --date YYYY-MM-DD
+
+set -euo pipefail
+
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib.sh
+source "$OPS_DIR/bin/lib.sh"
+
+DRY_RUN=0
+TARGET_ISSUE=""
+LIMIT=""
+export RUN_DATE="${RUN_DATE:-$(date +%F)}"
+
+usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+parse_common_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY_RUN=1; export DRY_RUN; shift ;;
+      --issue) TARGET_ISSUE="${2:-}"; shift 2 ;;
+      --limit) LIMIT="${2:-}"; shift 2 ;;
+      --date) export RUN_DATE="$2"; RUN_DIR="$STATE_DIR/runs/$RUN_DATE"; mkdir -p "$RUN_DIR"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "未知参数：$1" ;;
+    esac
+  done
+}
+
+run_dir_init() {
+  RUN_DIR="$STATE_DIR/runs/$RUN_DATE"
+  mkdir -p "$RUN_DIR"
+  export RUN_DIR
+  export LOG_FILE="$RUN_DIR/run.log"
+  touch "$LOG_FILE"
+}
+
+# ================================================================ 09:00 研究
+
+cmd_research() {
+  parse_common_args "$@"
+  run_dir_init
+  take_lock
+  require_cmd jq node
+  git_auth_check
+  [ -n "${MINIMAX_API_KEY:-}" ] || die "MINIMAX_API_KEY 未设置"
+
+  sync_app
+
+  log "步骤 1/4：采集资讯"
+  node "$OPS_DIR/bin/feeds/collect.mjs" \
+    --out "$RUN_DIR" --date "$RUN_DATE" --hours "${FEED_HOURS:-24}" --limit "${FEED_LIMIT:-60}" \
+    || die "资讯采集失败"
+
+  local prompt="$RUN_DIR/research-prompt.md"
+  {
+    cat "$OPS_DIR/prompts/research.md"
+    printf '\n\n## 今日资讯原文\n\n'
+    cat "$RUN_DIR/digest.md"
+  } > "$prompt"
+
+  log "步骤 2/4：MiniMax M3 生成建议"
+  local envelope="$RUN_DIR/research-envelope.json"
+  run_claude m3 "$SCRATCH_DIR" "$prompt" text "$MAX_TURNS_TEXT" "$envelope" \
+    || die "claude 调用失败"
+
+  local payload="$RUN_DIR/research.json"
+  claude_result "$envelope" | node "$OPS_DIR/bin/json-extract.mjs" > "$payload" 2>/dev/null \
+    || die "未能从模型输出中提取 JSON（见 $envelope）"
+
+  log "步骤 3/4：校验建议"
+  if ! node "$OPS_DIR/bin/validate.mjs" research "$payload" "$RUN_DIR/digest.json" >"$RUN_DIR/research-validation.log" 2>&1; then
+    cat "$RUN_DIR/research-validation.log" >&2
+    notify_failure "pinward 研究校验失败 $RUN_DATE" "$(cat "$RUN_DIR/research-validation.log")"
+    die "建议未通过校验，未创建 issue"
+  fi
+
+  local title
+  title="$(jq -r '.title' "$payload")"
+  local full_title="「每日资讯」$RUN_DATE $title"
+
+  log "步骤 4/4：创建 issue：$full_title"
+  if [ "$DRY_RUN" = "1" ]; then
+    log "[dry-run] 将创建 issue：$full_title，正文 $RUN_DIR/issue-body.md"
+    jq -r '.body_markdown' "$payload" > "$RUN_DIR/issue-body.md"
+    echo "DRY-RUN OK: $full_title"
+    return 0
+  fi
+
+  local existing
+  existing="$(ghq issue list -R "$GITHUB_REPO" --state all --search "$RUN_DATE in:title" --json title --jq '[.[] | select(.title | startswith("「每日资讯」"))] | length')"
+  if [ "$existing" != "0" ]; then
+    log "今天已存在同类 issue（$existing 条），跳过创建"
+    return 0
+  fi
+
+  {
+    jq -r '.body_markdown' "$payload"
+    printf '\n\n---\n\n### 参考来源\n\n'
+    jq -r '.evidence[] | "- \(.why) — \(.url)"' "$payload"
+    printf '\n<sub>由 pinward 自动化（MiniMax M3）生成，请人工评审后修改标签：%s / %s / %s。</sub>\n' \
+      "$LABEL_APPROVED" "$LABEL_HOLD" "$LABEL_REJECT"
+  } > "$RUN_DIR/issue-body.md"
+
+  local url
+  url="$(ghq issue create -R "$GITHUB_REPO" \
+    --title "$full_title" \
+    --body-file "$RUN_DIR/issue-body.md" \
+    --label "$LABEL_PENDING")"
+  log "已创建：$url"
+  state_put "research:$RUN_DATE" "$(jq -nc --arg u "$url" --arg t "$full_title" '{url:$u,title:$t}')"
+  echo "RESEARCH OK: $url"
+}
+
+# ================================================================ 10:00 拆分
+
+split_one() { # <issue-json>
+  local issue="$1" number title body prompt envelope payload count
+  number="$(jq -r '.number' <<<"$issue")"
+  title="$(jq -r '.title' <<<"$issue")"
+  body="$(jq -r '.body' <<<"$issue")"
+
+  log "拆分 issue #$number：$title"
+  prompt="$RUN_DIR/split-$number-prompt.md"
+  {
+    cat "$OPS_DIR/prompts/split.md"
+    printf '\n\n## 待拆分的 issue\n\n标题：%s\n\n%s\n' "$title" "$body"
+    printf '\n\n## 仓库文件清单\n\n```\n'
+    git -C "$APP_DIR" ls-files | grep -v '^ops/' || true
+    printf '```\n'
+    printf '\n\n## 项目约定（CLAUDE.md）\n\n'
+    cat "$APP_DIR/CLAUDE.md"
+  } > "$prompt"
+
+  envelope="$RUN_DIR/split-$number-envelope.json"
+  run_claude flash "$SCRATCH_DIR" "$prompt" text "$MAX_TURNS_TEXT" "$envelope" || return 1
+
+  payload="$RUN_DIR/split-$number.json"
+  claude_result "$envelope" | node "$OPS_DIR/bin/json-extract.mjs" > "$payload" 2>/dev/null || {
+    warn "#$number 未能提取 JSON"
+    return 1
+  }
+
+  if ! node "$OPS_DIR/bin/validate.mjs" split "$payload" --max "$MAX_CHILDREN_PER_DAY" \
+      >"$RUN_DIR/split-$number-validation.log" 2>&1; then
+    warn "#$number 拆分结果未通过校验"
+    cat "$RUN_DIR/split-$number-validation.log" >&2
+    return 1
+  fi
+
+  count="$(jq 'length' "$payload")"
+  log "#$number 拆出 $count 个子任务"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    log "[dry-run] 将创建 $count 个子 issue（见 $payload）"
+    jq -r '.[] | "- \(.title)"' "$payload" >&2
+    return 0
+  fi
+
+  local -a child_numbers=()
+  local i child_body child_url
+  for i in $(seq 0 $((count - 1))); do
+    jq -r ".[$i].body_markdown" "$payload" > "$RUN_DIR/split-$number-child-$i.md"
+    {
+      cat "$RUN_DIR/split-$number-child-$i.md"
+      printf '\n\n## 验收标准\n\n'
+      jq -r ".[$i].acceptance[] | \"- [ ] \(.)\"" "$payload"
+      printf '\n## 建议改动文件\n\n'
+      jq -r ".[$i].files[]? | \"- \`\(.)\`\"" "$payload"
+      printf '\n## 约束\n\n来源父 issue：#%s。请遵守仓库根 `CLAUDE.md`：零依赖、不改受保护路径、`npm run check && npm test` 必须全绿。\n' "$number"
+      printf '\n<!-- pinward-parent:%s -->\n' "$number"
+    } > "$RUN_DIR/split-$number-child-$i-full.md"
+
+    child_url="$(ghq issue create -R "$GITHUB_REPO" \
+      --title "$(jq -r ".[$i].title" "$payload")" \
+      --body-file "$RUN_DIR/split-$number-child-$i-full.md" \
+      --label "$LABEL_APPROVED" --label "$LABEL_CHILD")"
+    child_numbers+=("${child_url##*/}")
+    log "  子 issue：$child_url"
+    sleep 1
+  done
+
+  {
+    printf '已拆分为 %s 个子任务（DeepSeek flash）：\n\n' "$count"
+    local n
+    for n in "${child_numbers[@]}"; do
+      printf -- '- [ ] #%s\n' "$n"
+    done
+    printf '\n子任务均已标记「%s」，将在 10:30 由 MiniMax M3 实现并逐个提交 PR。\n' "$LABEL_APPROVED"
+  } > "$RUN_DIR/split-$number-comment.md"
+
+  ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/split-$number-comment.md" >/dev/null
+  ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_SPLIT" >/dev/null
+  state_put "$(state_key_issue "$number")" \
+    "$(jq -nc --argjson c "$count" --argjson ch "$(printf '%s\n' "${child_numbers[@]}" | jq -R . | jq -sc .)" \
+        '{stage:"split", children:$ch, count:$c}')"
+  echo "SPLIT OK: #$number -> ${child_numbers[*]}"
+  return 0
+}
+
+cmd_split() {
+  parse_common_args "$@"
+  run_dir_init
+  take_lock
+  require_cmd jq node
+  git_auth_check
+  [ -n "${DEEPSEEK_API_KEY:-}" ] || die "DEEPSEEK_API_KEY 未设置"
+
+  sync_app
+
+  local issues
+  issues="$(list_issues "$LABEL_APPROVED")"
+  local todo
+  todo="$(jq -c --argjson target "${TARGET_ISSUE:-0}" '
+    [ .[]
+      | select(([.labels[].name] | index("子任务")) == null)
+      | select(([.labels[].name] | index("已拆分")) == null)
+      | select(([.labels[].name] | index("AI失败")) == null)
+      | select($target == 0 or .number == $target)
+    ]' <<<"$issues")"
+
+  local count
+  count="$(jq 'length' <<<"$todo")"
+  log "待拆分 issue：$count 条"
+  if [ "$count" = "0" ]; then
+    echo "SPLIT SKIP: 无待拆分 issue"
+    return 0
+  fi
+
+  local failed=0 i
+  for i in $(seq 0 $((count - 1))); do
+    local one
+    one="$(jq -c ".[$i]" <<<"$todo")"
+    if ! split_one "$one"; then
+      failed=$((failed + 1))
+      local num
+      num="$(jq -r '.number' <<<"$one")"
+      if [ "$DRY_RUN" != "1" ]; then
+        ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+        ghq issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「$LABEL_FAILED」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+  notify_failure "pinward 拆分完成 $RUN_DATE" "待拆分 $count，失败 $failed"
+  echo "SPLIT DONE: 共 $count，失败 $failed"
+}
+
+# ================================================================ 10:30 实现
+
+extract_changed_files() { # <worktree> —— 已提交改动（相对基线）与工作区未提交改动的并集
+  {
+    git -C "$1" diff --name-only "origin/$BASE_BRANCH...HEAD" 2>/dev/null || true
+    git -C "$1" status --porcelain | sed -e 's/^...//' -e 's/.* -> //'
+  } | grep -v '^$' | sort -u
+}
+
+commit_type_for() { # <files-file>
+  if grep -qvE '^(tests/|docs/)' "$1"; then echo "feat"; else echo "test"; fi
+}
+
+commit_scope_for() { # <files-file>
+  local f
+  f="$(head -n 1 "$1")"
+  case "$f" in
+    src/renderer.js) echo "renderer" ;;
+    src/game.js) echo "game" ;;
+    src/physics.js) echo "physics" ;;
+    src/main.js) echo "ui" ;;
+    src/audio.js) echo "audio" ;;
+    src/cards.js) echo "cards" ;;
+    src/waves.js) echo "waves" ;;
+    src/storage.js) echo "storage" ;;
+    src/entities.js) echo "entities" ;;
+    index.html|style.css) echo "ui" ;;
+    *) echo "game" ;;
+  esac
+}
+
+implement_one() { # <issue-json>
+  local issue="$1" number title slug branch wt prompt envelope
+  number="$(jq -r '.number' <<<"$issue")"
+  title="$(jq -r '.title' <<<"$issue")"
+  slug="$(slugify "$title")"
+  branch="ai/${number}-${slug:-task}"
+  wt="$WORKTREE_DIR/current"
+
+  if [ "$DRY_RUN" != "1" ]; then
+    local existing
+    existing="$(ghq pr list -R "$GITHUB_REPO" --state all --search "pinward-issue: $number in:body" --json number --jq 'length' 2>/dev/null || echo 0)"
+    if [ "$existing" != "0" ]; then
+      log "#$number 已有 PR，跳过"
+      state_put "$(state_key_issue "$number")" '{"stage":"pr_open"}'
+      return 0
+    fi
+  fi
+
+  log "实现 issue #$number：$title（分支 $branch）"
+  git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+  rm -rf "$wt"
+  git -C "$APP_DIR" branch -D "$branch" >/dev/null 2>&1 || true
+  git -C "$APP_DIR" worktree add -b "$branch" "$wt" "origin/$BASE_BRANCH" >/dev/null
+
+  prompt="$RUN_DIR/implement-$number-prompt.md"
+  {
+    cat "$OPS_DIR/prompts/implement.md"
+    printf '\n\n## 你要实现的子任务\n\n标题：%s\n\n%s\n' "$title" "$(jq -r '.body' <<<"$issue")"
+    printf '\n\n## 项目约定（CLAUDE.md）\n\n'
+    cat "$APP_DIR/CLAUDE.md"
+  } > "$prompt"
+
+  envelope="$RUN_DIR/implement-$number-envelope.json"
+  local attempt=1 ok=0
+  while [ "$attempt" -le 2 ]; do
+    if run_claude m3 "$wt" "$prompt" code "$MAX_TURNS_IMPLEMENT" "$envelope"; then
+      # 收集改动 + 跑测试
+      extract_changed_files "$wt" > "$RUN_DIR/implement-$number-files.txt"
+      if [ ! -s "$RUN_DIR/implement-$number-files.txt" ]; then
+        warn "#$number 第 $attempt 次：没有任何改动"
+        attempt=$((attempt + 1))
+        continue
+      fi
+      local violation
+      violation="$(protected_paths_violation "$RUN_DIR/implement-$number-files.txt")"
+      if [ -n "$violation" ]; then
+        warn "#$number 触碰受保护路径：$violation"
+        attempt=$((attempt + 1))
+        continue
+      fi
+      if ( cd "$wt" && npm run check >"$RUN_DIR/implement-$number-check.log" 2>&1 && npm test >"$RUN_DIR/implement-$number-test.log" 2>&1 ); then
+        ok=1
+        break
+      fi
+      warn "#$number 第 $attempt 次：测试未通过"
+      {
+        printf '\n\n## 上一次尝试的失败反馈（第 %s 次）\n\n' "$attempt"
+        printf '你上一次的改动没有通过验证。请修复后重新提交改动。\n\n```\n'
+        tail -n 80 "$RUN_DIR/implement-$number-check.log" 2>/dev/null || true
+        tail -n 120 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
+        printf '\n```\n'
+      } >> "$prompt"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  if [ "$ok" != "1" ]; then
+    warn "#$number 实现失败"
+    if [ "$DRY_RUN" != "1" ]; then
+      {
+        printf 'pinward：自动实现失败。\n\n'
+        printf -- '- 分支：`%s`\n- 改动：%s 个文件\n- 验证日志：见服务器 `%s`\n\n' \
+          "$branch" "$(wc -l < "$RUN_DIR/implement-$number-files.txt" 2>/dev/null || echo 0)" "$RUN_DIR"
+        printf '```\n'
+        tail -n 60 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
+        printf '\n```\n'
+      } > "$RUN_DIR/implement-$number-failcomment.md"
+      ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+      ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/implement-$number-failcomment.md" >/dev/null 2>&1 || true
+    fi
+    git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    git -C "$APP_DIR" branch -D "$branch" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  local ftype fscope
+  ftype="$(commit_type_for "$RUN_DIR/implement-$number-files.txt")"
+  fscope="$(commit_scope_for "$RUN_DIR/implement-$number-files.txt")"
+  local message="$ftype($fscope): ${title#\[子任务\] } (#$number)"
+
+  if [ "$DRY_RUN" = "1" ]; then
+    log "[dry-run] 将会提交：$message"
+    log "[dry-run] 改动文件："
+    sed 's/^/    /' "$RUN_DIR/implement-$number-files.txt" >&2
+    log "[dry-run] 保留 worktree 供人工检查：$wt"
+    echo "IMPLEMENT DRY-RUN OK: #$number（worktree 保留在 $wt）"
+    return 0
+  fi
+
+  ( cd "$wt" && git add -A && { git diff --cached --quiet || git commit -q -m "$message"; } )
+  default_branch_guard "$branch"
+  # 清掉上一次失败留下的同名远端分支，避免 push 被拒
+  if git -C "$wt" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+    git -C "$wt" push -q origin --delete "$branch" >/dev/null 2>&1 || true
+  fi
+  ( cd "$wt" && git push -q -u origin "$branch" )
+
+  {
+    printf '## 关联\n\n'
+    printf -- '- 子 issue：Closes #%s\n- 由 pinward 自动化（MiniMax M3）实现\n\n' "$number"
+    printf 'pinward-issue: %s\n\n' "$number"
+    printf '## 改了什么\n\n'
+    sed 's/^/- `/' "$RUN_DIR/implement-$number-files.txt" | sed 's/$/`/'
+    printf '\n## 怎么验证\n\n'
+    printf '```\n$ npm run check && npm test\n'
+    tail -n 12 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
+    printf '```\n\n'
+    printf '> 由人工评审后合并。请勿直接推 master。\n'
+  } > "$RUN_DIR/implement-$number-prbody.md"
+
+  local pr_url
+  pr_url="$(ghq pr create -R "$GITHUB_REPO" --draft \
+    --base "$BASE_BRANCH" --head "$branch" \
+    --title "$message" --body-file "$RUN_DIR/implement-$number-prbody.md")"
+
+  ghq issue comment "$number" -R "$GITHUB_REPO" \
+    --body "pinward：已提交 draft PR $pr_url（分支 \`$branch\`），等待人工评审合并。" >/dev/null
+  state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" '{stage:"pr_open",branch:$b,pr:$p}')"
+  git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
+  echo "IMPLEMENT OK: #$number -> $pr_url"
+  return 0
+}
+
+cmd_implement() {
+  parse_common_args "$@"
+  run_dir_init
+  take_lock
+  require_cmd jq node
+  git_auth_check
+  [ -n "${MINIMAX_API_KEY:-}" ] || die "MINIMAX_API_KEY 未设置"
+
+  sync_app
+
+  local issues todo count
+  issues="$(list_issues "$LABEL_APPROVED")"
+  todo="$(jq -c --argjson target "${TARGET_ISSUE:-0}" '
+    [ .[]
+      | select(([.labels[].name] | index("子任务")) != null)
+      | select(([.labels[].name] | index("AI失败")) == null)
+      | select($target == 0 or .number == $target)
+    ]' <<<"$issues")"
+
+  count="$(jq 'length' <<<"$todo")"
+  local cap="${LIMIT:-$MAX_CHILDREN_PER_DAY}"
+  log "待实现子 issue：$count 条，本次上限 $cap 条"
+  if [ "$count" = "0" ]; then
+    echo "IMPLEMENT SKIP: 无待实现子 issue"
+    return 0
+  fi
+
+  local deadline now started failed=0 done_count=0 i
+  started="$(date +%s)"
+  deadline=$((started + MAX_IMPLEMENT_SECONDS))
+
+  for i in $(seq 0 $((count - 1))); do
+    [ "$done_count" -lt "$cap" ] || { log "已达本次上限 $cap，剩余留到下一轮"; break; }
+    now="$(date +%s)"
+    [ "$now" -lt "$deadline" ] || { log "已达时间预算，剩余留到下一轮"; break; }
+
+    local one num
+    one="$(jq -c ".[$i]" <<<"$todo")"
+    num="$(jq -r '.number' <<<"$one")"
+    if [ "$DRY_RUN" != "1" ]; then
+      ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "AI实现中" >/dev/null 2>&1 || true
+    fi
+    if implement_one "$one"; then
+      done_count=$((done_count + 1))
+    else
+      failed=$((failed + 1))
+    fi
+    if [ "$DRY_RUN" != "1" ]; then
+      ghq issue edit "$num" -R "$GITHUB_REPO" --remove-label "AI实现中" >/dev/null 2>&1 || true
+    fi
+  done
+
+  notify_failure "pinward 实现完成 $RUN_DATE" "尝试 $count，成功 $done_count，失败 $failed"
+  echo "IMPLEMENT DONE: 成功 $done_count，失败 $failed"
+}
+
+# ================================================================ 11:30 集成校验
+
+cmd_verify() {
+  parse_common_args "$@"
+  run_dir_init
+  take_lock
+  require_cmd jq node
+  git_auth_check
+  sync_app
+
+  local prs
+  prs="$(ghq pr list -R "$GITHUB_REPO" --state open --limit 30 --json number,headRefName,title \
+    --jq '[.[] | select(.headRefName | startswith("ai/"))]')"
+  local count
+  count="$(jq 'length' <<<"$prs")"
+  log "待集成校验的 AI PR：$count 个"
+  if [ "$count" -lt 2 ]; then
+    echo "VERIFY SKIP: AI PR 少于 2 个，无需集成校验"
+    return 0
+  fi
+
+  local tmp="$WORKTREE_DIR/integration"
+  rm -rf "$tmp"
+  git -C "$APP_DIR" worktree remove --force "$tmp" >/dev/null 2>&1 || true
+  git -C "$APP_DIR" worktree add --detach "$tmp" "origin/$BASE_BRANCH" >/dev/null
+
+  local i conflicts=() merged=() test_ok=1
+  for i in $(seq 0 $((count - 1))); do
+    local br num
+    br="$(jq -r ".[$i].headRefName" <<<"$prs")"
+    num="$(jq -r ".[$i].number" <<<"$prs")"
+    git -C "$APP_DIR" fetch --quiet origin "$br" 2>/dev/null || true
+    if git -C "$tmp" merge --no-edit --quiet "origin/$br" >/dev/null 2>&1; then
+      merged+=("$num")
+    else
+      git -C "$tmp" merge --abort >/dev/null 2>&1 || true
+      conflicts+=("$num")
+    fi
+  done
+
+  if [ "${#merged[@]}" -gt 0 ]; then
+    if ! ( cd "$tmp" && npm run check >"$RUN_DIR/verify-check.log" 2>&1 && npm test >"$RUN_DIR/verify-test.log" 2>&1 ); then
+      test_ok=0
+    fi
+  fi
+
+  local i2
+  for i2 in $(seq 0 $((count - 1))); do
+    local num
+    num="$(jq -r ".[$i2].number" <<<"$prs")"
+    local status="合并无冲突"
+    if printf '%s\n' "${conflicts[@]:-}" | grep -qx "$num"; then
+      status="**与其它 PR 存在合并冲突**，需要人工解决"
+    elif [ "$test_ok" = "0" ]; then
+      status="合并后 \`npm test\` **未通过**（可能与其他 PR 相互影响）"
+    fi
+    if [ "$DRY_RUN" != "1" ]; then
+      ghq pr comment "$num" -R "$GITHUB_REPO" --body "pinward 集成校验（共 $count 个 AI PR）：
+
+- 本次结果：$status
+- 依次合并顺序：$(jq -r '[.[].number] | map("#" + (.|tostring)) | join(" -> ")' <<<"$prs")
+- 合并后测试：$( [ "$test_ok" = "1" ] && echo '通过' || echo '失败' )
+
+> 该评论仅为参考，合并顺序仍由人工决定。" >/dev/null 2>&1 || true
+    fi
+  done
+
+  rm -rf "$tmp"
+  git -C "$APP_DIR" worktree prune
+  echo "VERIFY DONE: 合并成功 ${#merged[@]}，冲突 ${#conflicts[@]}，合并后测试 $([ "$test_ok" = "1" ] && echo 通过 || echo 失败)"
+}
+
+# ================================================================ doctor
+
+cmd_doctor() {
+  run_dir_init
+  local ok=0 fail=0
+  check() { # <name> <0|1> <detail>
+    if [ "$2" = "0" ]; then printf '  ✅ %-22s %s\n' "$1" "$3"; ok=$((ok + 1));
+    else printf '  ❌ %-22s %s\n' "$1" "$3"; fail=$((fail + 1)); fi
+  }
+
+  echo "===== pinward doctor ====="
+  echo "[环境]"
+  check "时区" "$([ "$(date +%Z)" = "UTC" ] && echo 1 || echo 0)" "$(date '+%Z %z %F %T')"
+  check "Node" "$(command -v node >/dev/null && echo 0 || echo 1)" "$(node --version 2>/dev/null || echo missing)"
+  check "jq" "$(command -v jq >/dev/null && echo 0 || echo 1)" "$(jq --version 2>/dev/null || echo missing)"
+  check "gh" "$(command -v gh >/dev/null && echo 0 || echo 1)" "$(gh --version 2>/dev/null | head -1 || echo missing)"
+  check "claude" "$(command -v claude >/dev/null && echo 0 || echo 1)" "$(claude --version 2>/dev/null || echo missing)"
+  check "swap" "$([ "$(awk '/SwapTotal/{print $2}' /proc/meminfo)" -gt 1048576 ] && echo 0 || echo 1)" \
+    "$(awk '/SwapTotal/{printf "%.1f GB", $2/1048576}' /proc/meminfo)"
+  check "内存" "0" "$(free -h | awk '/Mem:/{print $2" total / "$7" available"}')"
+  check "磁盘" "0" "$(df -h "$PINWARD_ROOT" | awk 'NR==2{print $2" total / "$4" avail"}')"
+
+  echo "[密钥]"
+  check "GH_TOKEN" "$([ -n "${GH_TOKEN:-}" ] && echo 0 || echo 1)" "$([ -n "${GH_TOKEN:-}" ] && echo "已设置(${#GH_TOKEN} 字符)" || echo 未设置)"
+  check "MINIMAX_API_KEY" "$([ -n "${MINIMAX_API_KEY:-}" ] && echo 0 || echo 1)" "$([ -n "${MINIMAX_API_KEY:-}" ] && echo "已设置(${#MINIMAX_API_KEY} 字符)" || echo 未设置)"
+  check "DEEPSEEK_API_KEY" "$([ -n "${DEEPSEEK_API_KEY:-}" ] && echo 0 || echo 1)" "$([ -n "${DEEPSEEK_API_KEY:-}" ] && echo "已设置(${#DEEPSEEK_API_KEY} 字符)" || echo 未设置)"
+
+  echo "[仓库]"
+  if ghq auth status >/dev/null 2>&1; then check "gh 认证" 0 "$(ghq auth status 2>&1 | head -1)"; else check "gh 认证" 1 "未登录或 token 无效"; fi
+  check "API 连通" "$(ghq api "repos/$GITHUB_REPO" >/dev/null 2>&1 && echo 0 || echo 1)" "$GITHUB_REPO 默认分支 $(ghq api "repos/$GITHUB_REPO" --jq .default_branch 2>/dev/null)"
+  local missing=""
+  local l
+  for l in "$LABEL_PENDING" "$LABEL_APPROVED" "$LABEL_HOLD" "$LABEL_REJECT" "$LABEL_CHILD" "$LABEL_SPLIT" "$LABEL_FAILED" "$LABEL_RUNNING"; do
+    ghq label list -R "$GITHUB_REPO" --json name --jq '.[].name' 2>/dev/null | grep -qx "$l" || missing="$missing $l"
+  done
+  check "标签齐全" "$([ -z "$missing" ] && echo 0 || echo 1)" "$([ -z "$missing" ] && echo "8/8" || echo "缺少:$missing")"
+  check "应用目录" "$([ -d "$APP_DIR/.git" ] && echo 0 || echo 1)" "$APP_DIR"
+
+  echo "[claude 模型回显]"
+  local probe="$RUN_DIR/doctor-prompt.txt"
+  printf '只回复两个字：就绪' > "$probe"
+  local e="$RUN_DIR/doctor-m3.json" r
+  if run_claude m3 "$SCRATCH_DIR" "$probe" text 2 "$e" >/dev/null 2>&1; then
+    r="$(claude_result "$e" | head -c 60)"
+    check "MiniMax M3" "0" "回复：$r"
+  else
+    check "MiniMax M3" "1" "调用失败（见 $e）"
+  fi
+  e="$RUN_DIR/doctor-flash.json"
+  if run_claude flash "$SCRATCH_DIR" "$probe" text 2 "$e" >/dev/null 2>&1; then
+    r="$(claude_result "$e" | head -c 60)"
+    check "DeepSeek flash" "0" "回复：$r"
+  else
+    check "DeepSeek flash" "1" "调用失败（见 $e）"
+  fi
+
+  echo "[定时器]"
+  systemctl list-timers 'pinward-*' --no-pager 2>/dev/null | head -5 || echo "  （未安装 systemd 单元）"
+
+  echo "=========================="
+  printf 'PASS %s / FAIL %s\n' "$ok" "$fail"
+  [ "$fail" = "0" ] && echo "DOCTOR OK" || echo "DOCTOR FAILED"
+  return 0
+}
+
+# ================================================================ status
+
+cmd_status() {
+  run_dir_init
+  require_cmd jq
+  echo "===== pinward status $(date '+%F %T %Z') ====="
+  echo "[state.json]"
+  jq -r 'to_entries | .[-10:][] | "  \(.key) -> \(.value.stage // "-")"' "$STATE_FILE" 2>/dev/null || echo "  (空)"
+  echo "[最近的运行目录]"
+  ls -1t "$STATE_DIR/runs" 2>/dev/null | head -5 | sed 's/^/  /'
+  echo "[GitHub]"
+  if command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-}" ]; then
+    ghq issue list -R "$GITHUB_REPO" --state open --limit 20 --json number,title,labels \
+      --jq '.[] | "  #\(.number) [\([.labels[].name] | join(","))] \(.title)"' 2>/dev/null || echo "  (无法访问)"
+    echo "  --- open PR ---"
+    ghq pr list -R "$GITHUB_REPO" --state open --limit 20 --json number,title,headRefName \
+      --jq '.[] | "  #\(.number) \(.headRefName) \(.title)"' 2>/dev/null || true
+  else
+    echo "  （需要 GH_TOKEN）"
+  fi
+  echo "=========================================="
+}
+
+# ================================================================ main
+
+cmd_all() {
+  parse_common_args "$@"
+  cmd_research "--date" "$RUN_DATE"
+  cmd_split "--date" "$RUN_DATE"
+  cmd_implement "--date" "$RUN_DATE"
+  cmd_verify "--date" "$RUN_DATE"
+}
+
+main() {
+  local cmd="${1:-}"
+  [ $# -gt 0 ] && shift || true
+  case "$cmd" in
+    research)  cmd_research "$@" ;;
+    split)     cmd_split "$@" ;;
+    implement) cmd_implement "$@" ;;
+    verify)    cmd_verify "$@" ;;
+    all)       cmd_all "$@" ;;
+    doctor)    cmd_doctor "$@" ;;
+    status)    cmd_status "$@" ;;
+    ""|-h|--help) usage ;;
+    *) die "未知子命令：$cmd" ;;
+  esac
+}
+
+main "$@"
