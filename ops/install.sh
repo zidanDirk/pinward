@@ -57,7 +57,7 @@ mkdir -p "$PINWARD_ROOT/state" "$PINWARD_ROOT/worktrees" "$PINWARD_ROOT/scratch"
 chown -R "$AGENT_USER:$AGENT_USER" "$PINWARD_ROOT"
 chmod +x "$APP_DIR/ops/bin/pinward" "$APP_DIR/ops/"*.sh 2>/dev/null || true
 [ -f "$ENV_FILE" ] && { chmod 600 "$ENV_FILE"; chown root:root "$ENV_FILE"; }
-ok "owner=$AGENT_USER，agent.env 600 root:root"
+ok "owner=${AGENT_USER}，agent.env 600 root:root"
 
 say "3/4 systemd 定时器"
 UNIT_SRC="$APP_DIR/ops/systemd"

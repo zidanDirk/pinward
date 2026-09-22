@@ -212,7 +212,7 @@ git_auth_check() {
 }
 
 sync_app() {
-  [ -d "$APP_DIR/.git" ] || die "应用目录未初始化：$APP_DIR（先执行 ops/install.sh）"
+  [ -d "$APP_DIR/.git" ] || die "应用目录未初始化：${APP_DIR}（先执行 ops/install.sh）"
   log "同步仓库：$APP_DIR -> origin/$BASE_BRANCH"
   git -C "$APP_DIR" fetch --prune origin
   git -C "$APP_DIR" checkout -f -B "$BASE_BRANCH" "origin/$BASE_BRANCH" >/dev/null 2>&1
@@ -336,7 +336,7 @@ run_claude() {
   # 从流里取出最后一个 result 事件作为 envelope
   jq -c 'select(.type == "result")' "$stream" 2>/dev/null | tail -n 1 > "$out" || true
   if [ ! -s "$out" ]; then
-    warn "claude[$profile] transcript 里没有 result 事件（transcript：$stream）"
+    warn "claude[$profile] transcript 里没有 result 事件（transcript：${stream}）"
     return 1
   fi
 
@@ -449,7 +449,7 @@ heal_stale_running_labels() {
     --json number --jq '.[].number' 2>/dev/null || true)"
   [ -n "$stale" ] || return 0
   for n in $stale; do
-    warn "#$n 残留「$LABEL_RUNNING」标签：上次运行异常中断，自动清理并留言"
+    warn "#$n 残留「${LABEL_RUNNING}」标签：上次运行异常中断，自动清理并留言"
     ghq issue edit "$n" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     ghq issue comment "$n" -R "$GITHUB_REPO" --body \
       "pinward：检测到上一次运行异常中断（残留 \`$LABEL_RUNNING\` 标签）。已自动清理，本轮会重新尝试实现。若反复出现，请查看服务器 \`$STATE_DIR/runs/<日期>/run.log\`。" \

@@ -103,7 +103,7 @@ if id -u "$AGENT_USER" >/dev/null 2>&1; then
   skip "用户 $AGENT_USER 已存在"
 else
   useradd -m -s /bin/bash "$AGENT_USER"
-  ok "已创建用户 $AGENT_USER（无 sudo 权限）"
+  ok "已创建用户 ${AGENT_USER}（无 sudo 权限）"
 fi
 if command -v claude >/dev/null 2>&1; then
   skip "claude $(claude --version 2>/dev/null | head -1)"
@@ -132,7 +132,7 @@ else
   esac
   read -rsp "    MiniMax API Key: " MINIMAX_API_KEY; echo
   read -rsp "    DeepSeek API Key（sk-…）: " DEEPSEEK_API_KEY; echo
-  read -rsp "    GitHub fine-grained PAT（github_pat_…，仅限 $GITHUB_REPO）: " GH_TOKEN; echo
+  read -rsp "    GitHub fine-grained PAT（github_pat_…，仅限 ${GITHUB_REPO}）: " GH_TOKEN; echo
   read -rp  "    失败通知 Webhook URL（可留空回车跳过）: " PINWARD_WEBHOOK_URL || true
   [ -n "${MINIMAX_API_KEY:-}" ] || { echo "MiniMax Key 不能为空" >&2; exit 1; }
   [ -n "${DEEPSEEK_API_KEY:-}" ] || { echo "DeepSeek Key 不能为空" >&2; exit 1; }
@@ -163,7 +163,7 @@ FEED_LIMIT=60
 EOF
   chmod 600 "$ENV_FILE"
   chown root:root "$ENV_FILE"
-  ok "已写入 $ENV_FILE（600 root:root，MiniMax 端点 $MINIMAX_BASE_URL）"
+  ok "已写入 ${ENV_FILE}（600 root:root，MiniMax 端点 ${MINIMAX_BASE_URL}）"
 fi
 
 # Claude Code 两套独立配置目录，避免模型配置互相污染
@@ -199,7 +199,7 @@ EOF
     }
 EOF
   chown -R "$AGENT_USER:$AGENT_USER" "$cfg_dir"
-  ok "配置目录 $cfg_dir（$model）"
+  ok "配置目录 ${cfg_dir}（${model}）"
 }
 
 write_profile m3 \

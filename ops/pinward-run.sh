@@ -27,7 +27,7 @@ if [ "$(id -u)" != "0" ]; then
   exec sudo -E bash "$0" "$@"
 fi
 
-[ -f "$ENV_FILE" ] || { echo "缺少 $ENV_FILE，请先执行 ops/bootstrap.sh" >&2; exit 1; }
+[ -f "$ENV_FILE" ] || { echo "缺少 ${ENV_FILE}，请先执行 ops/bootstrap.sh" >&2; exit 1; }
 [ -x "$APP_DIR/ops/bin/pinward" ] || { echo "缺少可执行的 $APP_DIR/ops/bin/pinward" >&2; exit 1; }
 command -v systemd-run >/dev/null 2>&1 || { echo "缺少 systemd-run（需要 systemd）" >&2; exit 1; }
 

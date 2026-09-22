@@ -223,6 +223,18 @@ env_out="$(jq -c 'select(.type == "result")' "$TMP/stream.jsonl" | tail -1)"
 [ "$(printf '%s' "$env_out" | jq -r '.result')" = "done" ]
 check "能从流里取出 envelope 的 result" ok $?
 
+echo "== shell 静态检查（多字节相邻展开）=="
+node "$OPS_DIR/tests/lint-shell.mjs" \
+  "$OPS_DIR/bin/lib.sh" "$OPS_DIR/bin/pinward" "$OPS_DIR/bootstrap.sh" \
+  "$OPS_DIR/install.sh" "$OPS_DIR/pinward-run.sh" "$OPS_DIR/tests/smoke.sh" >/dev/null 2>&1
+check "全部 \$VAR 紧跟多字节字符时都加了花括号" ok $?
+
+# 用 %s 拼出来，避免这条负例本身被 lint 命中
+BAD='$LABEL_RUNNING'
+printf 'warn "残留「%s」标签"\n' "$BAD" > "$TMP/lint-bad.sh"
+node "$OPS_DIR/tests/lint-shell.mjs" "$TMP/lint-bad.sh" >/dev/null 2>&1
+check "未加花括号的写法会被拦下" fail $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?

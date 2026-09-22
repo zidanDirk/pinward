@@ -97,7 +97,7 @@ cmd_research() {
     warn "第 $attempt 次生成失败"
     if [ "$attempt" = "2" ]; then
       notify_failure "pinward 研究失败 $RUN_DATE" "模型输出无法解析为 JSON，详见服务器 $RUN_DIR"
-      die "建议生成失败（已重试 1 次，见 $RUN_DIR）"
+      die "建议生成失败（已重试 1 次，见 ${RUN_DIR}）"
     fi
   done
 
@@ -114,7 +114,7 @@ cmd_research() {
 
   log "步骤 4/4：创建 issue：$full_title"
   if [ "$DRY_RUN" = "1" ]; then
-    log "[dry-run] 将创建 issue：$full_title，正文 $RUN_DIR/issue-body.md"
+    log "[dry-run] 将创建 issue：${full_title}，正文 $RUN_DIR/issue-body.md"
     jq -r '.body_markdown' "$payload" > "$RUN_DIR/issue-body.md"
     echo "DRY-RUN OK: $full_title"
     return 0
@@ -156,7 +156,7 @@ split_one() { # <issue-json>
   title="$(jq -r '.title' <<<"$issue")"
   body="$(jq -r '.body' <<<"$issue")"
 
-  log "拆分 issue #$number：$title"
+  log "拆分 issue #${number}：$title"
   prompt="$RUN_DIR/split-$number-prompt.md"
   {
     cat "$OPS_DIR/prompts/split.md"
@@ -191,7 +191,7 @@ split_one() { # <issue-json>
   log "#$number 拆出 $count 个子任务"
 
   if [ "$DRY_RUN" = "1" ]; then
-    log "[dry-run] 将创建 $count 个子 issue（见 $payload）"
+    log "[dry-run] 将创建 $count 个子 issue（见 ${payload}）"
     jq -r '.[] | "- \(.title)"' "$payload" >&2
     return 0
   fi
@@ -276,12 +276,12 @@ cmd_split() {
       num="$(jq -r '.number' <<<"$one")"
       if [ "$DRY_RUN" != "1" ]; then
         ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-        ghq issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「$LABEL_FAILED」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
+        ghq issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「${LABEL_FAILED}」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
       fi
     fi
   done
-  notify_failure "pinward 拆分完成 $RUN_DATE" "待拆分 $count，失败 $failed"
-  echo "SPLIT DONE: 共 $count，失败 $failed"
+  notify_failure "pinward 拆分完成 $RUN_DATE" "待拆分 ${count}，失败 $failed"
+  echo "SPLIT DONE: 共 ${count}，失败 $failed"
 }
 
 # ================================================================ 10:30 实现
@@ -330,7 +330,7 @@ implement_one() { # <issue-json>
     local existing_pr=""
     if existing_pr="$(pr_for_issue "$number")"; then
       if [ -n "$existing_pr" ]; then
-        log "#$number 已有 PR #$existing_pr，跳过"
+        log "#$number 已有 PR #${existing_pr}，跳过"
         state_put "$(state_key_issue "$number")" '{"stage":"pr_open"}'
         return 0
       fi
@@ -342,7 +342,7 @@ implement_one() { # <issue-json>
   local parent
   parent="$(parent_of_issue "$issue")"
 
-  log "实现 issue #$number：$title（分支 $branch${parent:+，父 issue #$parent}）"
+  log "实现 issue #${number}：${title}（分支 $branch${parent:+，父 issue #$parent}）"
 
   # 用独立 clone，不用 git worktree。worktree 的 .git 文件指向
   # <APP_DIR>/.git/worktrees/<name>，Claude Code 探测项目根时可能一路解析到主仓库，
@@ -371,7 +371,7 @@ implement_one() { # <issue-json>
     while IFS= read -r prev; do
       [ -n "$prev" ] || continue
       if ! git -C "$wt" fetch --quiet origin "$prev" 2>/dev/null; then
-        warn "无法获取前置分支 $prev，跳过"
+        warn "无法获取前置分支 ${prev}，跳过"
         continue
       fi
       if git -C "$wt" merge --no-edit --quiet "origin/$prev" >/dev/null 2>&1; then
@@ -468,7 +468,7 @@ implement_one() { # <issue-json>
     log "[dry-run] 改动文件："
     sed 's/^/    /' "$RUN_DIR/implement-$number-files.txt" >&2
     log "[dry-run] 保留 worktree 供人工检查：$wt"
-    echo "IMPLEMENT DRY-RUN OK: #$number（worktree 保留在 $wt）"
+    echo "IMPLEMENT DRY-RUN OK: #${number}（worktree 保留在 ${wt}）"
     return 0
   fi
 
@@ -512,7 +512,7 @@ implement_one() { # <issue-json>
     --title "$message" --body-file "$RUN_DIR/implement-$number-prbody.md")"
 
   ghq issue comment "$number" -R "$GITHUB_REPO" \
-    --body "pinward：已提交 draft PR $pr_url（分支 \`$branch\`），等待人工评审合并。" >/dev/null
+    --body "pinward：已提交 draft PR ${pr_url}（分支 \`$branch\`），等待人工评审合并。" >/dev/null
   state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" --argjson par "${parent:-0}" '{stage:"pr_open",branch:$b,pr:$p,parent:$par}')"
   echo "IMPLEMENT OK: #$number -> $pr_url"
   return 0
@@ -526,8 +526,11 @@ cmd_implement() {
   git_auth_check
   [ -n "${MINIMAX_API_KEY:-}" ] || die "MINIMAX_API_KEY 未设置"
 
-  # 已经抢到锁，说明没有别的实例在跑；此时还挂着「运行中」标签的都是上次崩掉的
-  heal_stale_running_labels
+  # 已经抢到锁，说明没有别的实例在跑；此时还挂着「运行中」标签的都是上次崩掉的。
+  # dry-run 绝不改动远端 —— 本机验证时用的是真仓库，这条护栏必须有。
+  if [ "$DRY_RUN" != "1" ]; then
+    heal_stale_running_labels
+  fi
 
   sync_app
 
@@ -553,7 +556,7 @@ cmd_implement() {
   deadline=$((started + MAX_IMPLEMENT_SECONDS))
 
   for i in $(seq 0 $((count - 1))); do
-    [ "$done_count" -lt "$cap" ] || { log "已达本次上限 $cap，剩余留到下一轮"; break; }
+    [ "$done_count" -lt "$cap" ] || { log "已达本次上限 ${cap}，剩余留到下一轮"; break; }
     now="$(date +%s)"
     [ "$now" -lt "$deadline" ] || { log "已达时间预算，剩余留到下一轮"; break; }
 
@@ -577,8 +580,8 @@ cmd_implement() {
     export RUNNING_ISSUE
   done
 
-  notify_failure "pinward 实现完成 $RUN_DATE" "尝试 $count，成功 $done_count，失败 $failed"
-  echo "IMPLEMENT DONE: 成功 $done_count，失败 $failed"
+  notify_failure "pinward 实现完成 $RUN_DATE" "尝试 ${count}，成功 ${done_count}，失败 $failed"
+  echo "IMPLEMENT DONE: 成功 ${done_count}，失败 $failed"
 }
 
 # ================================================================ 11:30 集成校验
@@ -699,14 +702,14 @@ cmd_doctor() {
     r="$(claude_result "$e" | head -c 60)"
     check "MiniMax M3" "0" "回复：$r"
   else
-    check "MiniMax M3" "1" "调用失败（见 $e）"
+    check "MiniMax M3" "1" "调用失败（见 ${e}）"
   fi
   e="$RUN_DIR/doctor-flash.json"
   if run_claude flash "$SCRATCH_DIR" "$probe" text 2 "$e" >/dev/null 2>&1; then
     r="$(claude_result "$e" | head -c 60)"
     check "DeepSeek flash" "0" "回复：$r"
   else
-    check "DeepSeek flash" "1" "调用失败（见 $e）"
+    check "DeepSeek flash" "1" "调用失败（见 ${e}）"
   fi
 
   echo "[定时器]"
