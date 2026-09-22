@@ -1,4 +1,4 @@
-import { WIDTH, HEIGHT, CELL } from "./physics.js";
+import { WIDTH, HEIGHT, CELL, seededRandom } from "./physics.js";
 import { TYPES } from "./cards.js";
 import { MONSTERS } from "./entities.js";
 import { BOSS_PHASES } from "./waves.js";
@@ -6,6 +6,40 @@ import { BOSS_PHASES } from "./waves.js";
 const FONT = "'Avenir Next', 'PingFang SC', sans-serif";
 const MONO = "ui-monospace, monospace";
 const mix = (a, b, t) => (a ?? b) + (b - (a ?? b)) * t;
+
+// 连击 ≥3 时显示的飘字模板。combo<3 直接空串，避免在波形间隙刷屏。
+export function comboText(combo, kills) {
+  if (!Number.isFinite(combo) || combo < 3) return "";
+  const total = Math.max(0, Math.floor(Number.isFinite(kills) ? kills : 0));
+  return `+${total} 击破`;
+}
+
+// 抖动偏移：reducedMotion 直接 0；否则用 (seed, frame) 算一对 |x|,|y| ≤4px 的偏移。
+export function shakeOffset(seed, frame, reduced) {
+  const out = { x: 0, y: 0 };
+  shakeOffsetInto(out, seed, frame, reduced);
+  return out;
+}
+
+export function shakeOffsetInto(out, seed, frame, reduced) {
+  if (reduced) {
+    out.x = 0;
+    out.y = 0;
+    return out;
+  }
+  const rng = seededRandom(
+    (((seed | 0) * 1000003 + (frame | 0)) | 0) || 1,
+  );
+  out.x = (rng() - 0.5) * 8;
+  out.y = (rng() - 0.5) * 8;
+  return out;
+}
+
+// 飘字 x 坐标夹在画布宽度内，防止 390px 移动端横向出界。
+export function clampTextX(x, width) {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(width, x));
+}
 
 export class Renderer {
   constructor(canvas) {
@@ -18,6 +52,19 @@ export class Renderer {
     this.shake = 0;
     this.cursor = null;
     this.tool = "place";
+    // 连击 / 飘字状态
+    this.combo = 0;
+    this.comboTtl = 0;
+    this.killsInWave = 0;
+    this.comboEffects = [];
+    // 微抖动状态（炸弹 + 分裂球命中触发，1~3 帧）
+    this.microShake = 0;
+    this.microShakeSeed = 0;
+    this.frameCount = 0;
+    // 当前帧绘制的预警机制（null = 没在画）；用于测试和外部观察。
+    this.warningKind = null;
+    // 抖动偏移复用缓冲，避免每帧分配新对象。
+    this._shakeBuf = { x: 0, y: 0 };
     this.background = document.createElement("canvas");
     this.background.width = WIDTH;
     this.background.height = HEIGHT;
@@ -138,6 +185,33 @@ export class Renderer {
       this.effects.push({ type: "leak", life: 0.35, max: 0.35 });
     }
     if (e.type === "bossStage") this.shake = 0.8;
+    // 连击累加 + 飘字生成
+    if (e.type === "kill") {
+      this.combo += 1;
+      this.comboTtl = 2.0;
+      this.killsInWave += 1;
+      const text = comboText(this.combo, this.killsInWave);
+      if (text) {
+        this.comboEffects.push({
+          x: e.x,
+          y: e.y,
+          text,
+          life: 1.0,
+          max: 1.0,
+        });
+      }
+    }
+    // 新一波 / 新阶段：连击与累计击破清零
+    if (e.type === "wave" || e.type === "bossStage") {
+      this.combo = 0;
+      this.comboTtl = 0;
+      this.killsInWave = 0;
+    }
+    // 炸弹怪禁用反弹器、分裂球命中：1~3 帧微抖动
+    if (e.type === "disable" || (e.type === "hit" && e.power === "split")) {
+      this.microShake = 3;
+      this.microShakeSeed = (this.microShakeSeed + 7919) | 0;
+    }
     if (this.effects.length > 60)
       this.effects.splice(0, this.effects.length - 60);
   }
@@ -153,13 +227,28 @@ export class Renderer {
       0,
     );
     c.drawImage(this.background, 0, 0);
+    // 把「长抖动 + 微抖动」合并到一次 translate，避免叠加两次矩阵。
+    this.frameCount = (this.frameCount + 1) | 0;
+    let dx = 0;
+    let dy = 0;
+    if (this.shake > 0 && !this.reduced) {
+      dx += Math.sin(this.shake * 90) * this.shake * 5;
+      dy += Math.cos(this.shake * 110) * this.shake * 4;
+    }
+    if (this.microShake > 0) {
+      shakeOffsetInto(this._shakeBuf, this.microShakeSeed, this.frameCount, this.reduced);
+      dx += this._shakeBuf.x;
+      dy += this._shakeBuf.y;
+    }
     c.save();
-    if (this.shake > 0 && !this.reduced)
-      c.translate(
-        Math.sin(this.shake * 90) * this.shake * 5,
-        Math.cos(this.shake * 110) * this.shake * 4,
-      );
+    if (dx !== 0 || dy !== 0) c.translate(dx, dy);
     this.shake = Math.max(0, this.shake - dt);
+    if (this.microShake > 0) this.microShake--;
+    // 连击超时归零，归零后 comboText() 不会再产出非空文本
+    if (this.comboTtl > 0) {
+      this.comboTtl -= dt;
+      if (this.comboTtl <= 0) this.combo = 0;
+    }
     this.drawAim(game);
     if (game.phase === "build") {
       [
@@ -222,6 +311,10 @@ export class Renderer {
       c.restore();
     }
     this.drawCursor(game);
+    // BOSS 机制预警：必须画在怪物 / 球之下，但又高于背景。
+    this.drawBossWarnings(game.boss);
+    // 连击飘字：画在屏幕坐标（不受 ball trail 影响）
+    this.drawComboText(dt);
     this.drawEffects(dt);
     c.restore();
   }
@@ -524,6 +617,73 @@ export class Renderer {
     c.fillRect(76, 91, 388 * Math.max(0, b.hp / b.maxHp), 5);
   }
 
+  // BOSS 预警画面：在 attackIn 刚被重置到 6 之后的 1.5 秒窗口里绘制。
+  // 复用阶段调色板 + 不同 alpha 后缀，避免与本体的不透明填色混淆。
+  drawBossWarnings(boss) {
+    this.warningKind = null;
+    if (!boss || boss.attackIn <= 4.5) return;
+    const mechanism = boss.order && boss.order[boss.stage];
+    if (!mechanism || !BOSS_PHASES[mechanism]) return;
+    this.warningKind = mechanism;
+    const c = this.ctx;
+    const phase = BOSS_PHASES[mechanism];
+    const progress = Math.max(0, Math.min(1, (6 - boss.attackIn) / 1.5));
+    if (mechanism === "devour") {
+      // 吞噬：被锁定的反弹器下方出现地面震纹
+      c.lineWidth = 2;
+      c.strokeStyle = phase.color + "60";
+      const warnings = boss.warnings && boss.warnings.length
+        ? boss.warnings
+        : this._fallbackDevourPositions();
+      for (const w of warnings) {
+        const groundY = HEIGHT - 38;
+        const radius = 14 + (1 - w.ttl / 1.5) * 32 + 4;
+        c.beginPath();
+        c.arc(w.x, groundY, radius, 0, Math.PI * 2);
+        c.stroke();
+        c.beginPath();
+        c.arc(w.x, groundY, radius * 0.6, 0, Math.PI * 2);
+        c.stroke();
+      }
+    } else if (mechanism === "swarm") {
+      // 潮群：下沿水位线随时间上抬
+      c.strokeStyle = phase.color + "70";
+      c.lineWidth = 3;
+      const top = HEIGHT - 78 - progress * 28;
+      for (let i = 0; i < 3; i++) {
+        const y = top + i * 9;
+        c.beginPath();
+        c.moveTo(12, y);
+        c.lineTo(WIDTH - 12, y);
+        c.stroke();
+      }
+    } else if (mechanism === "gravity") {
+      // 重潮：四角同时向外扩张的脉冲
+      const baseR = 10 + progress * 18;
+      c.lineWidth = 2;
+      c.strokeStyle = phase.color + "50";
+      const corners = [
+        [20, 76],
+        [WIDTH - 20, 76],
+        [20, HEIGHT - 76],
+        [WIDTH - 20, HEIGHT - 76],
+      ];
+      for (const [cx, cy] of corners) {
+        c.beginPath();
+        c.arc(cx, cy, baseR, 0, Math.PI * 2);
+        c.stroke();
+      }
+    }
+  }
+
+  _fallbackDevourPositions() {
+    // 没有 warnings 数据时（玩家拆掉了反弹器），在底部给两个固定震纹作为兜底
+    return [
+      { x: WIDTH * 0.3, y: HEIGHT - 38, ttl: 1.5 },
+      { x: WIDTH * 0.7, y: HEIGHT - 38, ttl: 1.5 },
+    ];
+  }
+
   drawCursor(game) {
     if (!this.cursor || game.phase === "over") return;
     const { col, row } = this.cursor;
@@ -558,6 +718,27 @@ export class Renderer {
       );
       c.globalAlpha = 1;
     }
+  }
+
+  // 连击飘字：每帧重新算一次剩余时间，过期移除；x 坐标 clamp 到画布宽度内。
+  drawComboText(dt) {
+    if (!this.comboEffects.length) return;
+    const c = this.ctx;
+    for (const eff of this.comboEffects) {
+      eff.life -= dt;
+      if (eff.life <= 0) continue;
+      const a = Math.max(0, eff.life / eff.max);
+      c.globalAlpha = a;
+      c.fillStyle = "#fff1c7";
+      c.font = `bold 14px ${MONO}`;
+      c.textAlign = "center";
+      const x = clampTextX(eff.x, WIDTH);
+      const y = eff.y - 28 - (1 - a) * 24;
+      c.fillText(eff.text, x, y);
+    }
+    if (this.comboEffects.some((e) => e.life <= 0))
+      this.comboEffects = this.comboEffects.filter((e) => e.life > 0);
+    c.globalAlpha = 1;
   }
 
   drawEffects(dt) {
