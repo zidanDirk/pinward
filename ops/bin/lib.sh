@@ -299,6 +299,35 @@ parent_of_issue() { # <issue-json> —— 从子 issue 正文里的 pinward-pare
   printf '%s' "$1" | jq -r '.body // ""' | sed -n 's/.*pinward-parent:\([0-9][0-9]*\).*/\1/p' | head -1
 }
 
+# 查询某个子 issue 是否已有 PR。
+# 用 headRefName 前缀精确匹配，而不是 GitHub 搜索 —— 搜索是模糊的、会受索引与
+# 令牌影响，且失败时的输出不可信（真机踩过：gh 往 stdout 写噪声后失败，
+# 被误判成「已有 PR」而静默跳过）。
+# 返回：0 且 stdout 为 PR 号或空串 = 查询成功；非 0 = 查询不可用，调用方应继续执行。
+pr_for_issue() { # <issue-number>
+  local n="$1" raw
+  raw="$(ghq pr list -R "$GITHUB_REPO" --state all --limit 200 --json number,headRefName 2>/dev/null || true)"
+  if ! printf '%s' "$raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    return 1
+  fi
+  printf '%s' "$raw" | jq -r --arg p "ai/$n-" '[.[] | select(.headRefName | startswith($p))] | (.[0].number // empty)'
+  return 0
+}
+
+# 统计今天是否已经建过「每日资讯」issue。
+# 同样不用搜索：拉回标题列表本地过滤，输出必须是纯数字，否则返回非 0 让调用方继续创建。
+research_issue_count() { # <date>
+  local d="$1" raw count
+  raw="$(ghq issue list -R "$GITHUB_REPO" --state all --limit 200 --json number,title 2>/dev/null || true)"
+  if ! printf '%s' "$raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    return 1
+  fi
+  count="$(printf '%s' "$raw" | jq -r --arg d "$d" '[.[] | select(.title | startswith("「每日资讯」" + $d))] | length')"
+  printf '%s' "$count" | grep -qE '^[0-9]+$' || return 1
+  printf '%s' "$count"
+  return 0
+}
+
 # ---------------------------------------------------------------- 校验
 
 # 校验 issue 正文/PR 正文是否触碰受保护路径
