@@ -35,6 +35,11 @@ warn() { printf '    \033[33m! %s\033[0m\n' "$*"; }
 [ "$(id -u)" = "0" ] || { echo "请用 root 执行：sudo bash $0" >&2; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 
+# git 2.35+ 的所有权校验：本脚本与 install.sh 以 root 操作 pinward 用户拥有的仓库。
+# 缺这一行会在 install.sh 第一步 fatal: detected dubious ownership，导致定时器装不上。
+git config --global --add safe.directory "$PINWARD_ROOT/app" 2>/dev/null || true
+git config --global --add safe.directory "$PINWARD_ROOT/worktrees/current" 2>/dev/null || true
+
 say "1/9 时区"
 if [ "$(timedatectl show -p Timezone --value)" = "Asia/Singapore" ]; then
   skip "时区已是 Asia/Singapore"
@@ -253,12 +258,16 @@ else
 fi
 
 say "安装 systemd 定时任务"
-bash "$PINWARD_ROOT/app/ops/install.sh"
+if ! bash "$PINWARD_ROOT/app/ops/install.sh"; then
+  warn "install.sh 未完全成功（见上方输出）。修正后可单独重跑："
+  warn "  sudo bash $PINWARD_ROOT/app/ops/install.sh"
+fi
 
 say "初始化完成"
 cat <<EOF
     下一步：
-      1. 以 pinward 身份体检：sudo -u $AGENT_USER -H bash -lc 'set -a; . $ENV_FILE; set +a; $PINWARD_ROOT/app/ops/bin/pinward doctor'
+      1. 体检（密钥由 systemd 注入，与定时器条件一致）：
+         sudo bash $PINWARD_ROOT/app/ops/pinward-run.sh doctor
       2. 把上面 doctor 的输出整段回贴给我。
       3. 定时器：research 09:00 / split 10:00 / implement 10:30 / verify 11:30（Asia/Singapore）
 EOF
