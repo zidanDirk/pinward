@@ -39,10 +39,15 @@ parse_common_args() {
 
 run_dir_init() {
   RUN_DIR="$STATE_DIR/runs/$RUN_DATE"
-  mkdir -p "$RUN_DIR"
+  mkdir -p "$RUN_DIR" 2>/dev/null || true
   export RUN_DIR
   export LOG_FILE="$RUN_DIR/run.log"
-  touch "$LOG_FILE"
+  # 若该目录被其他身份写过（例如手动以 root 跑过 doctor），退回到按用户名区分，避免 set -e 崩掉
+  if ! touch "$LOG_FILE" 2>/dev/null; then
+    LOG_FILE="$RUN_DIR/run-$(id -un).log"
+    touch "$LOG_FILE" 2>/dev/null || LOG_FILE=/dev/null
+  fi
+  export LOG_FILE
 }
 
 # ================================================================ 09:00 研究

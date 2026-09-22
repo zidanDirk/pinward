@@ -20,6 +20,11 @@ warn() { printf '    \033[33m! %s\033[0m\n' "$*"; }
 
 [ "$(id -u)" = "0" ] || { echo "请用 root 执行：sudo bash $0" >&2; exit 1; }
 
+# git 2.35+ 的所有权校验：本脚本以 root 操作 pinward 用户拥有的仓库，必须显式信任。
+# 不加这一行会直接 fatal: detected dubious ownership，导致定时器装不上。
+git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+git config --global --add safe.directory "$PINWARD_ROOT/worktrees/current" 2>/dev/null || true
+
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -31,11 +36,17 @@ fi
 
 say "1/4 同步代码"
 if [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" fetch --prune origin
-  git -C "$APP_DIR" checkout -f -B "$BASE_BRANCH" "origin/$BASE_BRANCH" >/dev/null 2>&1
-  git -C "$APP_DIR" reset --hard "origin/$BASE_BRANCH" >/dev/null
-  git -C "$APP_DIR" worktree prune
-  ok "$APP_DIR @ $(git -C "$APP_DIR" rev-parse --short HEAD)"
+  # 同步失败不应阻断定时器安装，只告警
+  if git -C "$APP_DIR" fetch --prune origin; then
+    git -C "$APP_DIR" checkout -f -B "$BASE_BRANCH" "origin/$BASE_BRANCH" >/dev/null 2>&1 || true
+    git -C "$APP_DIR" reset --hard "origin/$BASE_BRANCH" >/dev/null || warn "reset 失败"
+    git -C "$APP_DIR" worktree prune >/dev/null 2>&1 || true
+    ok "$APP_DIR @ $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  else
+    warn "git fetch 失败，跳过代码同步（继续安装定时器）"
+  fi
+elif [ -d "$APP_DIR" ] && [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+  warn "$APP_DIR 非空且不是 git 仓库，跳过克隆"
 else
   git clone --branch "$BASE_BRANCH" "https://github.com/$GITHUB_REPO.git" "$APP_DIR"
   ok "已克隆到 $APP_DIR"
@@ -88,4 +99,4 @@ else
 fi
 
 say "完成"
-echo "    手动触发：sudo -u $AGENT_USER -H bash -lc 'set -a; . $ENV_FILE; set +a; $APP_DIR/ops/bin/pinward <research|split|implement|verify|all|doctor|status>'"
+echo "    手动触发：sudo bash $APP_DIR/ops/pinward-run.sh <research|split|implement|verify|all|doctor|status>"

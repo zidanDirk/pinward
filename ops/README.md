@@ -61,11 +61,11 @@ sudo bash ops/bootstrap.sh        # 幂等，会交互式询问三个密钥
 ## 日常运维
 
 ```bash
-# 手动触发（调试用）
-sudo -u pinward -H bash -lc 'set -a; . /etc/pinward/agent.env; set +a; /opt/pinward/app/ops/bin/pinward doctor'
-sudo -u pinward -H bash -lc '... pinward research --dry-run'      # 只生成不建 issue
-sudo -u pinward -H bash -lc '... pinward implement --issue 12'    # 只补做某条
-sudo -u pinward -H bash -lc '... pinward status'                  # 状态总览
+# 手动触发（调试用）。用 systemd 注入密钥，条件与定时器完全一致
+sudo bash /opt/pinward/app/ops/pinward-run.sh doctor
+sudo bash /opt/pinward/app/ops/pinward-run.sh research --dry-run   # 只生成不建 issue
+sudo bash /opt/pinward/app/ops/pinward-run.sh implement --issue 12 # 只补做某条
+sudo bash /opt/pinward/app/ops/pinward-run.sh status               # 状态总览
 
 # 看日志
 journalctl -u pinward@research -n 200 --no-pager
