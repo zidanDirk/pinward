@@ -159,7 +159,7 @@ pinward_on_exit() {
 - 最后执行到的步骤：\`${PINWARD_STEP:-未打点}\`
 - 服务器日志：\`${LOG_FILE:-无}\`
 
-请查看上述日志；修复后移除 \`$LABEL_FAILED\` 标签即可重试。" >/dev/null 2>&1 || true
+请查看上述日志。两种重试方式：手动跑 \`pinward implement --issue $RUNNING_ISSUE\`（会忽略 \`$LABEL_FAILED\`），或移除 \`$LABEL_FAILED\` 标签等待下次定时运行。" >/dev/null 2>&1 || true
     fi
     RUNNING_ISSUE=""
   fi
@@ -476,6 +476,29 @@ outside_worktree_paths() { # <worktree> <written-paths-file>
   local real
   real="$(cd "$1" 2>/dev/null && pwd -P || printf '%s' "$1")"
   grep -v "^${real}/" "$2" 2>/dev/null | grep -v '^$' || true
+}
+
+# 待拆分的父 issue：不能是子任务、不能已拆分。
+# 指定 target 时忽略「AI失败」过滤 —— 显式 --issue N 就是人工要求重试这条，
+# 此时还要求先手动摘标签是多余的摩擦。
+select_parent_issues() { # <issues-json> <target-number>
+  jq -c --argjson target "${2:-0}" '
+    [ .[]
+      | select(([.labels[].name] | index("子任务")) == null)
+      | select(([.labels[].name] | index("已拆分")) == null)
+      | select($target != 0 or ([.labels[].name] | index("AI失败")) == null)
+      | select($target == 0 or .number == $target)
+    ] | sort_by(.number)' <<<"${1:-[]}"
+}
+
+# 待实现的子 issue：必须是子任务。同上，指定 target 时忽略「AI失败」。
+select_child_issues() { # <issues-json> <target-number>
+  jq -c --argjson target "${2:-0}" '
+    [ .[]
+      | select(([.labels[].name] | index("子任务")) != null)
+      | select($target != 0 or ([.labels[].name] | index("AI失败")) == null)
+      | select($target == 0 or .number == $target)
+    ] | sort_by(.number)' <<<"${1:-[]}"
 }
 
 # ---------------------------------------------------------------- 校验
