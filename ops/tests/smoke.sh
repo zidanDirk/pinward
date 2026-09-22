@@ -200,6 +200,29 @@ check "storage.js 被纳入一览" ok $?
 printf '%s' "$out" | sed -n '/### src\/game.js/,/^$/p' | grep -q "coins"
 check "game.js 一览里不应出现 coins（真机事故复盘）" fail $?
 
+echo "== transcript 解析（定位"改动写到了别处"的故障）=="
+cat > "$TMP/stream.jsonl" <<'EOF'
+{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/opt/pinward/worktrees/current/src/game.js"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/opt/pinward/worktrees/current/index.html"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/opt/pinward/worktrees/current/style.css"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/opt/pinward/app/LEAKED.js"}}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"done"}
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; stream_written_paths "$2"' _ "$LIB" "$TMP/stream.jsonl" 2>/dev/null)"
+# 命令替换会吃掉结尾换行，补一个 \n 再数行
+[ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = "3" ]
+check "只统计写操作（Read 不算），共 3 个路径" ok $?
+printf '%s' "$out" | grep -q "src/game.js"
+check "只读的文件不应出现在写入列表里" fail $?
+outside="$(printf '%s\n' "$out" | grep -v '^/opt/pinward/worktrees/current/' | grep -v '^$' || true)"
+[ "$outside" = "/opt/pinward/app/LEAKED.js" ]
+check "能识别出写到工作目录之外的路径" ok $?
+
+env_out="$(jq -c 'select(.type == "result")' "$TMP/stream.jsonl" | tail -1)"
+[ "$(printf '%s' "$env_out" | jq -r '.result')" = "done" ]
+check "能从流里取出 envelope 的 result" ok $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?
