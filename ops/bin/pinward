@@ -418,7 +418,7 @@ implement_one() { # <issue-json>
     stream_written_paths "$envelope.stream.jsonl" >> "$RUN_DIR/implement-$number-written.txt" 2>/dev/null || true
     sort -u -o "$RUN_DIR/implement-$number-written.txt" "$RUN_DIR/implement-$number-written.txt" 2>/dev/null || true
     local outside
-    outside="$(grep -v "^$wt/" "$RUN_DIR/implement-$number-written.txt" | grep -v '^$' || true)"
+    outside="$(outside_worktree_paths "$wt" "$RUN_DIR/implement-$number-written.txt")"
     if [ -n "$outside" ]; then
       warn "#$number agent 把文件写到了工作目录之外（改动会丢失）："
       printf '%s\n' "$outside" | sed 's/^/    /' >&2
