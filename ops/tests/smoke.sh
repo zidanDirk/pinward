@@ -248,6 +248,24 @@ check "dry-run 时写操作被短路" ok $?
 printf '%s' "$out" | grep -q "REAL-GH-CALLED"
 check "dry-run 时绝不可能触达远端 gh" fail $?
 
+echo "== 符号链接感知的越界写入检测 =="
+mkdir -p "$TMP/realwt" && ln -sfn "$TMP/realwt" "$TMP/linkwt"
+# 用解析后的真实路径构造 fixture —— agent 写入的就是它自己解析出来的物理路径
+REALWT="$(cd "$TMP/realwt" && pwd -P)"
+cat > "$TMP/written.txt" <<EOF
+$REALWT/src/game.js
+$REALWT/tests/game.test.js
+/opt/pinward/app/LEAKED.js
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; outside_worktree_paths "$2" "$3"' _ "$LIB" "$TMP/linkwt" "$TMP/written.txt" 2>/dev/null)"
+[ "$out" = "/opt/pinward/app/LEAKED.js" ]
+check "经符号链接进入的写入不被误报为越界" ok $?
+
+rm -f "$TMP/written.txt" && printf '%s\n' "$REALWT/ok.js" > "$TMP/written.txt"
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; outside_worktree_paths "$2" "$3"' _ "$LIB" "$TMP/linkwt" "$TMP/written.txt" 2>/dev/null)"
+[ -z "$out" ]
+check "全部落在工作目录内时返回空" ok $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?

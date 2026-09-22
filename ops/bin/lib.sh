@@ -469,6 +469,15 @@ heal_stale_running_labels() {
   return 0
 }
 
+# 从"agent 写入路径"列表里挑出落在工作目录之外的项。
+# 必须用 pwd -P 解析后的真实路径比较：macOS 上 /tmp 是 /private/tmp 的符号链接，
+# 按字面前缀比对会把正常写入误报成"写到了目录之外"（本机验证时踩过）。
+outside_worktree_paths() { # <worktree> <written-paths-file>
+  local real
+  real="$(cd "$1" 2>/dev/null && pwd -P || printf '%s' "$1")"
+  grep -v "^${real}/" "$2" 2>/dev/null | grep -v '^$' || true
+}
+
 # ---------------------------------------------------------------- 校验
 
 # 校验 issue 正文/PR 正文是否触碰受保护路径
