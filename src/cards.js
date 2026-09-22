@@ -72,3 +72,36 @@ export function drawCards(wave, rng) {
   }
   return cards;
 }
+
+// 一次重抽的星币价格，重抽只在第 12 波奖励阶段触发
+const REROLL_COST = 5;
+
+// 星币是否足够发起一次重抽；纯判定，不修改 state
+export function canReroll(state) {
+  return state.coins >= REROLL_COST;
+}
+
+// 抽取新的 3 张候选卡；星币不足时返回 null 且不修改 state；
+// 成功时扣 5 星币、把新候选写入 state.cards 并返回新候选数组
+export function rerollCandidates(state, rng = Math.random) {
+  if (!canReroll(state)) return null;
+  // 重抽只在第 12 波奖励阶段触发；state.wave 缺失时按 12 处理
+  const wave = state.wave ?? 12;
+  const candidates = drawCards(wave, rng);
+  state.coins -= REROLL_COST;
+  state.cards = candidates;
+  return candidates;
+}
+
+// 自动选卡：锁定索引合法时返回对应卡牌，否则退回第 1 张；
+// 对负数、越界、NaN、非整数一律回退，且不抛异常
+export function resolveAutoPick(candidates, lockedIndex) {
+  if (
+    !Number.isInteger(lockedIndex) ||
+    lockedIndex < 0 ||
+    lockedIndex >= candidates.length
+  ) {
+    return candidates[0];
+  }
+  return candidates[lockedIndex];
+}
