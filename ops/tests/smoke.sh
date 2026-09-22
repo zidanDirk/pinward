@@ -173,6 +173,18 @@ check "research_issue_count 对其它日期返回 0" ok $?
 PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; ghq() { printf "not json at all\n"; return 1; }; research_issue_count 2026-09-22' _ "$LIB" >/dev/null 2>&1
 check "输出非 JSON 时 research_issue_count 返回非 0" fail $?
 
+echo "== API 一览提取（防止拆分器臆造字段名）=="
+out="$(node "$OPS_DIR/bin/repo-surface.mjs" "$OPS_DIR/../src" 2>/dev/null)"
+printf '%s' "$out" | grep -q "导出：TYPES, drawCards"
+check "cards.js 导出被正确提取" ok $?
+printf '%s' "$out" | grep -q "实例字段：.*runtime_marker_never_present.*"
+check "不存在的字段不会凭空出现" fail $?
+printf '%s' "$out" | grep -q "src/storage.js"
+check "storage.js 被纳入一览" ok $?
+# 真机事故复盘：game.js 必须没有 coins 字段，storage 才是星币归属
+printf '%s' "$out" | sed -n '/### src\/game.js/,/^$/p' | grep -q "coins"
+check "game.js 一览里不应出现 coins（真机事故复盘）" fail $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?
