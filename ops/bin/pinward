@@ -250,7 +250,7 @@ cmd_split() {
       | select(([.labels[].name] | index("已拆分")) == null)
       | select(([.labels[].name] | index("AI失败")) == null)
       | select($target == 0 or .number == $target)
-    ]' <<<"$issues")"
+    ] | sort_by(.number)' <<<"$issues")"
 
   local count
   count="$(jq 'length' <<<"$todo")"
@@ -327,11 +327,36 @@ implement_one() { # <issue-json>
     fi
   fi
 
-  log "实现 issue #$number：$title（分支 $branch）"
+  local parent
+  parent="$(parent_of_issue "$issue")"
+
+  log "实现 issue #$number：$title（分支 $branch${parent:+，父 issue #$parent}）"
   git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
   rm -rf "$wt"
   git -C "$APP_DIR" branch -D "$branch" >/dev/null 2>&1 || true
   git -C "$APP_DIR" worktree add -b "$branch" "$wt" "origin/$BASE_BRANCH" >/dev/null
+
+  # 前置依赖：把同父 issue 中序号更小、已实现的分支并入当前分支。
+  # 这样每个 PR 都自包含、可独立运行；人类按任意顺序合并，先合并的那些
+  # 会从后续 PR 的 diff 里自动消失（因为 diff 始终是相对 master 计算的）。
+  local -a merged_predecessors=()
+  if [ -n "$parent" ]; then
+    local prev
+    while IFS= read -r prev; do
+      [ -n "$prev" ] || continue
+      if ! git -C "$APP_DIR" fetch --quiet origin "$prev" 2>/dev/null; then
+        warn "无法获取前置分支 $prev，跳过"
+        continue
+      fi
+      if git -C "$wt" merge --no-edit --quiet "origin/$prev" >/dev/null 2>&1; then
+        merged_predecessors+=("$prev")
+        log "  已并入前置子任务分支：$prev"
+      else
+        warn "  合并前置分支 $prev 冲突，已回退（请优先合并它，再重跑本子任务）"
+        git -C "$wt" merge --abort >/dev/null 2>&1 || true
+      fi
+    done < <(sibling_branches "$parent" "$number")
+  fi
 
   prompt="$RUN_DIR/implement-$number-prompt.md"
   {
@@ -420,6 +445,10 @@ implement_one() { # <issue-json>
     printf '## 关联\n\n'
     printf -- '- 子 issue：Closes #%s\n- 由 pinward 自动化（MiniMax M3）实现\n\n' "$number"
     printf 'pinward-issue: %s\n\n' "$number"
+    if [ "${#merged_predecessors[@]}" -gt 0 ]; then
+      printf '> **本 PR 已并入前置子任务的提交**：%s\n' "${merged_predecessors[*]}"
+      printf '> 先合并它们的 PR，本 PR 的 diff 会自动收敛到只剩本子任务的改动。\n\n'
+    fi
     printf '## 改了什么\n\n'
     sed 's/^/- `/' "$RUN_DIR/implement-$number-files.txt" | sed 's/$/`/'
     printf '\n## 怎么验证\n\n'
@@ -436,7 +465,7 @@ implement_one() { # <issue-json>
 
   ghq issue comment "$number" -R "$GITHUB_REPO" \
     --body "pinward：已提交 draft PR $pr_url（分支 \`$branch\`），等待人工评审合并。" >/dev/null
-  state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" '{stage:"pr_open",branch:$b,pr:$p}')"
+  state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" --argjson par "${parent:-0}" '{stage:"pr_open",branch:$b,pr:$p,parent:$par}')"
   git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
   echo "IMPLEMENT OK: #$number -> $pr_url"
   return 0
@@ -459,7 +488,7 @@ cmd_implement() {
       | select(([.labels[].name] | index("子任务")) != null)
       | select(([.labels[].name] | index("AI失败")) == null)
       | select($target == 0 or .number == $target)
-    ]' <<<"$issues")"
+    ] | sort_by(.number)' <<<"$issues")"
 
   count="$(jq 'length' <<<"$todo")"
   local cap="${LIMIT:-$MAX_CHILDREN_PER_DAY}"

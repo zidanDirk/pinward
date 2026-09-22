@@ -285,6 +285,20 @@ claude_result() { # <envelope-file> —— 打印 .result 文本
   jq -r '.result // empty' "$1"
 }
 
+sibling_branches() { # <parent-number> <current-number> —— 同父 issue 中序号更小、已实现的分支，按序输出
+  jq -r --argjson p "$1" --argjson c "$2" '
+    to_entries
+    | map(select(.value.parent == $p and .value.stage == "pr_open" and (.value.branch // "") != ""))
+    | map({ n: (.key | sub("^issue:"; "") | tonumber), b: .value.branch })
+    | sort_by(.n)
+    | .[] | select(.n < $c) | .b
+  ' "$STATE_FILE" 2>/dev/null || true
+}
+
+parent_of_issue() { # <issue-json> —— 从子 issue 正文里的 pinward-parent 标记取父号
+  printf '%s' "$1" | jq -r '.body // ""' | sed -n 's/.*pinward-parent:\([0-9][0-9]*\).*/\1/p' | head -1
+}
+
 # ---------------------------------------------------------------- 校验
 
 # 校验 issue 正文/PR 正文是否触碰受保护路径

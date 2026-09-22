@@ -87,6 +87,21 @@ systemctl start pinward@research        # 立即跑一次
 
 更新自动化脚本本身：改 `ops/` → 合并到 `master` → 在服务器执行 `sudo bash /opt/pinward/app/ops/install.sh`。
 
+## 子任务依赖与 PR 合并顺序
+
+拆分器会尽量避免多个子任务改同一个文件，但**无法避免接口依赖** —— 例如子任务 B 要调用
+子任务 A 新增的函数。`implement` 的处理方式：
+
+1. 按 issue 号**升序串行**实现；
+2. 实现第 N 个子任务时，先把同父 issue 中**序号更小、已经实现**的兄弟分支
+   `git merge` 进当前分支，再交给 agent，这样它能看到前置接口；
+3. 因此每个 PR 都自包含、可独立运行，base 始终是 `master`。
+
+**人类可以按任意顺序合并**：先合并掉的那些子任务，会自动从后续 PR 的 diff 里消失
+（diff 永远相对 master 计算）。`pinward verify` 会在每个 PR 上评论建议的合并顺序。
+
+若前置分支合并出现冲突，脚本会回退该次合并并在 PR 正文里标注，提示优先合并前置 PR。
+
 ## 安全边界（重要）
 
 1. **机器不能合并、不能推 `master`**。脚本内有 `default_branch_guard`，GitHub 侧还有分支保护（require PR + require status check `test`）。
