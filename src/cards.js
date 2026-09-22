@@ -72,3 +72,31 @@ export function drawCards(wave, rng) {
   }
   return cards;
 }
+
+// 纯判定：在奖励阶段且尚未使用过重抽时返回 true。不修改 state。
+export function canReroll(state) {
+  return state.phase === "reward" && !state.rerollUsed;
+}
+
+// 重抽候选：不可重抽时返回 null 且完全不修改 state；
+// 可重抽时调用 drawCards 生成新候选，写回 state.cards 并标记 rerollUsed。
+export function rerollCandidates(state, rng = Math.random) {
+  if (!canReroll(state)) return null;
+  const cards = drawCards(state.wave, rng);
+  state.cards = cards;
+  state.rerollUsed = true;
+  return cards;
+}
+
+// 自动选卡：lockedIndex 合法时返回该张，否则回退到第 1 张，不抛异常。
+export function resolveAutoPick(candidates, lockedIndex) {
+  if (
+    typeof lockedIndex === "number" &&
+    Number.isInteger(lockedIndex) &&
+    lockedIndex >= 0 &&
+    lockedIndex < candidates.length
+  ) {
+    return candidates[lockedIndex];
+  }
+  return candidates[0];
+}
