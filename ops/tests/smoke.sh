@@ -30,6 +30,26 @@ check "截取数组" ok $?
 printf '没有任何 JSON' | node "$OPS_DIR/bin/json-extract.mjs" >/dev/null 2>&1
 check "无 JSON 时报错" fail $?
 
+echo "== json-extract 脏输出（真机踩过的形态）=="
+printf '<minimax><thinking>I should output JSON. Here is a stray brace { in prose.</thinking>{"a":1}</minimax>' \
+  | node "$OPS_DIR/bin/json-extract.mjs" > "$TMP/c.json" 2>/dev/null
+check "剥离 <minimax>/<thinking> 内联推理" ok $?
+[ "$(cat "$TMP/c.json")" = '{"a":1}' ]; check "剥离后内容正确" ok $?
+
+printf 'Let me think. Maybe {"broken": tru} then the real one {"ok":true}' \
+  | node "$OPS_DIR/bin/json-extract.mjs" > "$TMP/d.json" 2>/dev/null
+check "跳过推理里的假 JSON 起点" ok $?
+[ "$(cat "$TMP/d.json")" = '{"ok":true}' ]; check "取到真正可解析的那个" ok $?
+
+printf '{"title":"abc","body":"unterminated' | node "$OPS_DIR/bin/json-extract.mjs" >/dev/null 2>&1
+check "被截断的输出仍然报错" fail $?
+
+# 注意：smoke.sh 开了 pipefail，node 的非零退出会污染管道状态，这里先落盘再 grep
+printf '{"title":"abc","body":"unterminated' \
+  | node "$OPS_DIR/bin/json-extract.mjs" >"$TMP/trunc.out" 2>"$TMP/trunc.err" || true
+grep -q "截断" "$TMP/trunc.err"
+check "截断诊断里点明 max output tokens" ok $?
+
 echo "== digest 样本 =="
 cat > "$TMP/digest.json" <<'EOF'
 {"items":[
