@@ -115,6 +115,34 @@ check "split 缺验收标准被拒绝" fail $?
 node "$OPS_DIR/bin/validate.mjs" split "$TMP/split-ok.json" --max 1 >/dev/null 2>&1
 check "split 超过数量上限被拒绝" fail $?
 
+echo "== 子任务依赖排序 =="
+cat > "$TMP/state.json" <<'EOF'
+{
+  "issue:6": {"stage":"pr_open","branch":"ai/6-a","parent":5},
+  "issue:7": {"stage":"pr_open","branch":"ai/7-b","parent":5},
+  "issue:9": {"stage":"pr_open","branch":"ai/9-d","parent":5},
+  "issue:8": {"stage":"split","parent":5},
+  "issue:20": {"stage":"pr_open","branch":"ai/20-x","parent":99}
+}
+EOF
+LIB="$OPS_DIR/bin/lib.sh"
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; sibling_branches 5 9' _ "$LIB" 2>/dev/null)"
+[ "$out" = "ai/6-a
+ai/7-b" ]
+check "sibling_branches 只取同父、已实现、序号更小的分支且升序" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; sibling_branches 5 6' _ "$LIB" 2>/dev/null)"
+[ -z "$out" ]
+check "sibling_branches 对最小序号返回空" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; parent_of_issue "$2"' _ "$LIB" '{"body":"说明文字\n<!-- pinward-parent:5 -->\n结尾"}' 2>/dev/null)"
+[ "$out" = "5" ]
+check "parent_of_issue 能从正文提取父号" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; parent_of_issue "$2"' _ "$LIB" '{"body":"没有标记"}' 2>/dev/null)"
+[ -z "$out" ]
+check "parent_of_issue 无标记时返回空" ok $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?
