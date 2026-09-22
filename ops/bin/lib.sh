@@ -231,19 +231,33 @@ run_claude() {
   fi
 
   log "claude[$profile/$mode] cwd=$workdir turns=$max_turns"
+  local stream="$out.stream.jsonl"
+
+  # 用 stream-json 而不是 json：只有流式输出才记录每一次工具调用，
+  # 从而能回答"agent 到底把文件写到了哪个路径"—— 这是在没有 SSH 的机器上
+  # 定位"改动消失"这类故障的唯一手段（真机踩过：3 个 PR 提交为空）。
   # 关键：剥离 GitHub 凭据，实施 agent 不持有仓库写权限
   (
     cd "$workdir"
-    with_timeout "$CLAUDE_TIMEOUT_SECONDS" "$out" \
+    with_timeout "$CLAUDE_TIMEOUT_SECONDS" "$stream" \
       env -u GH_TOKEN -u GITHUB_TOKEN \
       "NODE_OPTIONS=${NODE_OPTIONS:---max-old-space-size=1024}" \
       "${profile_env[@]}" \
-      claude -p "$(cat "$prompt_file")" --output-format json "${mode_args[@]}"
+      claude -p "$(cat "$prompt_file")" --output-format stream-json --verbose "${mode_args[@]}"
   ) || {
-    warn "claude[$profile] 非零退出，envelope：$out"
+    warn "claude[$profile] 非零退出，transcript：$stream"
+    jq -c 'select(.type == "result")' "$stream" 2>/dev/null | tail -n 1 > "$out" || true
     dump_envelope "$out"
+    warn "  完整 transcript（含每次工具调用）：$stream"
     return 1
   }
+
+  # 从流里取出最后一个 result 事件作为 envelope
+  jq -c 'select(.type == "result")' "$stream" 2>/dev/null | tail -n 1 > "$out" || true
+  if [ ! -s "$out" ]; then
+    warn "claude[$profile] transcript 里没有 result 事件（transcript：$stream）"
+    return 1
+  fi
 
   # 记录用量
   if [ -s "$out" ]; then
@@ -264,6 +278,19 @@ run_claude() {
     return 1
   fi
   return 0
+}
+
+# 从 transcript 中提取 agent 实际写入过的文件绝对路径。
+# 用途：核对 agent 是否把文件写到了我们预期的工作目录之外 —— 若发生了，
+# 改动"消失"就完全解释得通（真机：3 个 PR 提交为空，另 1 个正常）。
+stream_written_paths() { # <stream-jsonl>
+  jq -r '
+    select(.type == "assistant")
+    | .message.content[]?
+    | select(.type == "tool_use")
+    | select(.name == "Write" or .name == "Edit" or .name == "MultiEdit" or .name == "NotebookEdit")
+    | (.input.file_path // empty)
+  ' "$1" 2>/dev/null | sort -u
 }
 
 # 打印 envelope 的关键诊断信息，便于在没有 SSH 的机器上远程定位

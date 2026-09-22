@@ -29,7 +29,7 @@
 ```
 /opt/pinward/
 ├── app/          # 仓库工作副本（每次运行前 reset 到 origin/master）
-├── worktrees/current/  # 实现用的临时 worktree（串行复用）
+├── worktrees/current/  # 实现用的独立克隆（串行复用；刻意不用 git worktree，见下）
 ├── scratch/      # 研究与拆分的工作目录（不接触仓库）
 └── state/
     ├── state.json          # issue -> 阶段
@@ -102,6 +102,18 @@ systemctl start pinward@research        # 立即跑一次
 
 若前置分支合并出现冲突，脚本会回退该次合并并在 PR 正文里标注，提示优先合并前置 PR。
 
+### 实现目录为什么是独立克隆而不是 git worktree
+
+真机上曾出现 3 个子任务的 PR **提交为空却报成功**。#7 的自述甚至声称 `src/game.js`
+"此前已实现"（实际不存在）。事后查证：这些改动从未被提交，工作目录在提交时是干净的。
+
+`git worktree` 的 `.git` 是一个指向 `<APP_DIR>/.git/worktrees/<name>` 的**文件**，
+Claude Code 探测项目根时可能一路解析到主仓库，从而把文件写到 `APP_DIR`。
+改成独立 `git clone` 后这种路径歧义不可能发生。
+
+同时把"改了什么"的判定基线从 `origin/master` 改为**agent 动手之前的 HEAD** ——
+原来的写法会被前置分支的提交污染，使"agent 什么都没改"的守卫失效。
+
 ## 安全边界（重要）
 
 1. **机器不能合并、不能推 `master`**。脚本内有 `default_branch_guard`，GitHub 侧还有分支保护（require PR + require status check `test`）。
@@ -135,6 +147,7 @@ systemd 单元还有 `MemoryHigh=1200M` / `MemoryMax=1700M`，超限只杀本单
 | research 报「未能从模型输出中提取 JSON」 | 跑 `pinward logs`。看 envelope 的 `modelUsage`：出现 `MiniMax-M3[1M]` 说明 `settings.json` 覆盖了 `ANTHROPIC_MODEL`（已用 `--model` 锁定）；`usage.output_tokens` 贴近上限说明输出被截断（已设 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000` 并有重试） |
 | 实施 agent 改完代码但测试不过 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论与「AI失败」标签 |
 | 子任务里出现了代码中不存在的字段名 | 拆分阶段只能看到文件清单，会臆造标识符。现已在拆分提示词里注入 `repo-surface.mjs` 提取的真实 API 一览，并规定只能引用其中出现过的名字；实施 agent 也被要求「禁止发明标识符」并在 PR 的「实现说明」里报告差异 |
+| implement 报成功但 PR 里没有任何改动 | 先看 `state/runs/<日期>/implement-<N>-written.txt`（agent 实际写入的绝对路径，取自 transcript）。若路径不在 `/opt/pinward/worktrees/current/` 下，说明 agent 把文件写到了别处 —— 这正是把实现目录从 `git worktree` 改成独立克隆的原因。transcript 全文在 `implement-<N>-envelope.json.stream.jsonl` |
 | PR 通过了测试但实现是错的 | `npm test` 全绿不代表语义正确。务必读 PR 正文的「实现说明（模型自述）」与「与子任务描述的差异」，再看测试是否真的执行了被测逻辑（恒真的同义反复测试是最常见的凑数手法） |
 | `split` 没动作 | 确认 issue 是 `同意实现` 且**没有** `子任务`/`已拆分`/`AI失败` 标签 |
 | PR 没建出来 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论 |

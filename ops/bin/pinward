@@ -286,9 +286,12 @@ cmd_split() {
 
 # ================================================================ 10:30 实现
 
-extract_changed_files() { # <worktree> —— 已提交改动（相对基线）与工作区未提交改动的并集
+extract_agent_changes() { # <worktree> <base-rev> —— 只统计 agent 自己造成的改动
+  # 基线必须是「agent 动手之前」的 HEAD，不能用 origin/master：
+  # 前置分支的提交会让 origin/master...HEAD 永远非空，从而使
+  # "agent 什么都没改" 的守卫失效（真机因此产出 3 个空提交的 PR 却报成功）。
   {
-    git -C "$1" diff --name-only "origin/$BASE_BRANCH...HEAD" 2>/dev/null || true
+    git -C "$1" diff --name-only "$2"...HEAD 2>/dev/null || true
     git -C "$1" status --porcelain | sed -e 's/^...//' -e 's/.* -> //'
   } | grep -v '^$' | sort -u
 }
@@ -340,10 +343,21 @@ implement_one() { # <issue-json>
   parent="$(parent_of_issue "$issue")"
 
   log "实现 issue #$number：$title（分支 $branch${parent:+，父 issue #$parent}）"
-  git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
-  rm -rf "$wt"
-  git -C "$APP_DIR" branch -D "$branch" >/dev/null 2>&1 || true
-  git -C "$APP_DIR" worktree add -b "$branch" "$wt" "origin/$BASE_BRANCH" >/dev/null
+
+  # 用独立 clone，不用 git worktree。worktree 的 .git 文件指向
+  # <APP_DIR>/.git/worktrees/<name>，Claude Code 探测项目根时可能一路解析到主仓库，
+  # 于是 agent 把文件写进 APP_DIR 而工作目录保持干净 —— 表现为"提交为空却报成功"。
+  # 独立 clone 让这种路径歧义不可能发生。
+  if [ ! -d "$wt/.git" ]; then
+    rm -rf "$wt"
+    git clone --quiet "https://github.com/$GITHUB_REPO.git" "$wt" >/dev/null 2>&1 \
+      || die "无法创建实现用克隆：$wt"
+  fi
+  git -C "$wt" remote set-url origin "https://github.com/$GITHUB_REPO.git"
+  git -C "$wt" fetch --prune --quiet origin
+  git -C "$wt" checkout -q -f -B "$branch" "origin/$BASE_BRANCH"
+  git -C "$wt" reset --hard --quiet "origin/$BASE_BRANCH"
+  git -C "$wt" clean -qfdx
 
   # 前置依赖：把同父 issue 中序号更小、已实现的分支并入当前分支。
   # 这样每个 PR 都自包含、可独立运行；人类按任意顺序合并，先合并的那些
@@ -353,7 +367,7 @@ implement_one() { # <issue-json>
     local prev
     while IFS= read -r prev; do
       [ -n "$prev" ] || continue
-      if ! git -C "$APP_DIR" fetch --quiet origin "$prev" 2>/dev/null; then
+      if ! git -C "$wt" fetch --quiet origin "$prev" 2>/dev/null; then
         warn "无法获取前置分支 $prev，跳过"
         continue
       fi
@@ -367,6 +381,10 @@ implement_one() { # <issue-json>
     done < <(sibling_branches "$parent" "$number")
   fi
 
+  # agent 动手之前的基线，后续所有"改了什么"的判断都以它为参照
+  local agent_base
+  agent_base="$(git -C "$wt" rev-parse HEAD)"
+
   prompt="$RUN_DIR/implement-$number-prompt.md"
   {
     cat "$OPS_DIR/prompts/implement.md"
@@ -379,8 +397,17 @@ implement_one() { # <issue-json>
   local attempt=1 ok=0
   while [ "$attempt" -le 2 ]; do
     if run_claude m3 "$wt" "$prompt" code "$MAX_TURNS_IMPLEMENT" "$envelope"; then
-      # 收集改动 + 跑测试
-      extract_changed_files "$wt" > "$RUN_DIR/implement-$number-files.txt"
+      # 先从 transcript 核对 agent 把文件写到了哪里：写到工作目录之外是
+      # "改动消失"的典型症状，必须显式暴露而不是让它静默变成空提交
+      stream_written_paths "$envelope.stream.jsonl" > "$RUN_DIR/implement-$number-written.txt" 2>/dev/null || true
+      local outside
+      outside="$(grep -v "^$wt/" "$RUN_DIR/implement-$number-written.txt" | grep -v '^$' || true)"
+      if [ -n "$outside" ]; then
+        warn "#$number agent 把文件写到了工作目录之外（改动会丢失）："
+        printf '%s\n' "$outside" | sed 's/^/    /' >&2
+      fi
+      # 收集改动（只算 agent 自己的）+ 跑测试
+      extract_agent_changes "$wt" "$agent_base" > "$RUN_DIR/implement-$number-files.txt"
       if [ ! -s "$RUN_DIR/implement-$number-files.txt" ]; then
         warn "#$number 第 $attempt 次：没有任何改动"
         attempt=$((attempt + 1))
@@ -423,8 +450,6 @@ implement_one() { # <issue-json>
       ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
       ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/implement-$number-failcomment.md" >/dev/null 2>&1 || true
     fi
-    git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
-    git -C "$APP_DIR" branch -D "$branch" >/dev/null 2>&1 || true
     return 1
   fi
 
@@ -460,6 +485,12 @@ implement_one() { # <issue-json>
     fi
     printf '## 改了什么\n\n'
     sed 's/^/- `/' "$RUN_DIR/implement-$number-files.txt" | sed 's/$/`/'
+    if [ -s "$RUN_DIR/implement-$number-written.txt" ]; then
+      printf '\n<details><summary>agent 实际写入的文件路径（取自 transcript，共 %s 个）</summary>\n\n' \
+        "$(wc -l < "$RUN_DIR/implement-$number-written.txt" | tr -d ' ')"
+      sed 's/^/- `/; s/$/`/' "$RUN_DIR/implement-$number-written.txt"
+      printf '\n</details>\n'
+    fi
     printf '\n## 怎么验证\n\n'
     printf '```\n$ npm run check && npm test\n'
     tail -n 12 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
@@ -477,7 +508,6 @@ implement_one() { # <issue-json>
   ghq issue comment "$number" -R "$GITHUB_REPO" \
     --body "pinward：已提交 draft PR $pr_url（分支 \`$branch\`），等待人工评审合并。" >/dev/null
   state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" --argjson par "${parent:-0}" '{stage:"pr_open",branch:$b,pr:$p,parent:$par}')"
-  git -C "$APP_DIR" worktree remove --force "$wt" >/dev/null 2>&1 || true
   echo "IMPLEMENT OK: #$number -> $pr_url"
   return 0
 }
