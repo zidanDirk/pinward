@@ -7,6 +7,7 @@
 #   pinward verify     11:30 对所有 ai/* PR 做集成试合并 + 测试，评论结果
 #   pinward all        依次执行上面四步
 #   pinward doctor     环境自检（输出可直接回贴的体检块）
+#   pinward logs       把最近一次运行的关键诊断信息汇总成一段可回贴的文本
 #   pinward status     当前状态总览
 #
 # 通用参数：--dry-run   --issue N   --limit N   --date YYYY-MM-DD
@@ -76,12 +77,22 @@ cmd_research() {
 
   log "步骤 2/4：MiniMax M3 生成建议"
   local envelope="$RUN_DIR/research-envelope.json"
-  run_claude m3 "$SCRATCH_DIR" "$prompt" text "$MAX_TURNS_TEXT" "$envelope" \
-    || die "claude 调用失败"
-
   local payload="$RUN_DIR/research.json"
-  claude_result "$envelope" | node "$OPS_DIR/bin/json-extract.mjs" > "$payload" 2>/dev/null \
-    || die "未能从模型输出中提取 JSON（见 $envelope）"
+  local attempt
+  for attempt in 1 2; do
+    if [ "$attempt" = "2" ]; then
+      log "重试一次（第 1 次模型输出不可用）"
+    fi
+    if run_claude m3 "$SCRATCH_DIR" "$prompt" text "$MAX_TURNS_TEXT" "$envelope" \
+       && claude_result "$envelope" | node "$OPS_DIR/bin/json-extract.mjs" > "$payload" 2>/dev/null; then
+      break
+    fi
+    warn "第 $attempt 次生成失败"
+    if [ "$attempt" = "2" ]; then
+      notify_failure "pinward 研究失败 $RUN_DATE" "模型输出无法解析为 JSON，详见服务器 $RUN_DIR"
+      die "建议生成失败（已重试 1 次，见 $RUN_DIR）"
+    fi
+  done
 
   log "步骤 3/4：校验建议"
   if ! node "$OPS_DIR/bin/validate.mjs" research "$payload" "$RUN_DIR/digest.json" >"$RUN_DIR/research-validation.log" 2>&1; then
@@ -617,6 +628,55 @@ cmd_doctor() {
   return 0
 }
 
+# ================================================================ logs
+
+cmd_logs() {
+  parse_common_args "$@"
+  run_dir_init
+  require_cmd jq
+  local d="$RUN_DIR"
+  echo "===== pinward logs $RUN_DATE ($d) ====="
+  if [ ! -d "$d" ]; then
+    echo "  （该日期没有运行记录）"
+    return 0
+  fi
+  echo "[目录内容]"
+  ls -la "$d" 2>/dev/null | tail -n +2 | awk '{printf "  %-8s %s\n", $5, $9}'
+
+  local f
+  for f in "$d"/research-envelope.json "$d"/split-*-envelope.json "$d"/implement-*-envelope.json; do
+    [ -f "$f" ] || continue
+    echo "[$(basename "$f")]"
+    jq -c '{is_error, subtype, api_error_status, num_turns, duration_ms,
+            result_len: ((.result // "") | length),
+            result_head: ((.result // "") | .[0:300])}' "$f" 2>/dev/null | sed 's/^/  /' \
+      || echo "  （不是合法 JSON）"
+  done
+
+  for f in "$d"/research-validation.log "$d"/split-*-validation.log; do
+    [ -f "$f" ] || continue
+    echo "[$(basename "$f")]"
+    sed 's/^/  /' "$f"
+  done
+
+  for f in "$d"/implement-*-test.log; do
+    [ -f "$f" ] || continue
+    echo "[$(basename "$f") 末尾 25 行]"
+    tail -n 25 "$f" | sed 's/^/  /'
+  done
+
+  if [ -f "$d/digest.md" ]; then
+    echo "[digest.md 前 25 行，共 $(wc -c < "$d/digest.md" | tr -d ' ') 字节]"
+    head -n 25 "$d/digest.md" | sed 's/^/  /'
+  fi
+
+  if [ -f "$d/run.log" ]; then
+    echo "[run.log 末尾 40 行]"
+    tail -n 40 "$d/run.log" | sed 's/^/  /'
+  fi
+  echo "===== 结束 ====="
+}
+
 # ================================================================ status
 
 cmd_status() {
@@ -660,6 +720,7 @@ main() {
     verify)    cmd_verify "$@" ;;
     all)       cmd_all "$@" ;;
     doctor)    cmd_doctor "$@" ;;
+    logs)      cmd_logs "$@" ;;
     status)    cmd_status "$@" ;;
     ""|-h|--help) usage ;;
     *) die "未知子命令：$cmd" ;;

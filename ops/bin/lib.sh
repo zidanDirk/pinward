@@ -29,7 +29,7 @@ export LOG_PREFIX="${LOG_PREFIX:-pinward}"
 export MAX_CHILDREN_PER_DAY="${MAX_CHILDREN_PER_DAY:-5}"
 export MAX_IMPLEMENT_SECONDS="${MAX_IMPLEMENT_SECONDS:-5400}"
 export MAX_TURNS_IMPLEMENT="${MAX_TURNS_IMPLEMENT:-40}"
-export MAX_TURNS_TEXT="${MAX_TURNS_TEXT:-6}"
+export MAX_TURNS_TEXT="${MAX_TURNS_TEXT:-10}"
 export CLAUDE_TIMEOUT_SECONDS="${CLAUDE_TIMEOUT_SECONDS:-1800}"
 export PINWARD_BYPASS_PERMISSIONS="${PINWARD_BYPASS_PERMISSIONS:-0}"
 
@@ -234,6 +234,7 @@ run_claude() {
       claude -p "$(cat "$prompt_file")" --output-format json "${mode_args[@]}"
   ) || {
     warn "claude[$profile] 非零退出，envelope：$out"
+    dump_envelope "$out"
     return 1
   }
 
@@ -242,6 +243,35 @@ run_claude() {
     jq -c '{usage: .usage, duration_ms: .duration_ms, num_turns: .num_turns, is_error: .is_error}' \
       "$out" >>"$RUN_DIR/claude-usage.jsonl" 2>/dev/null || true
   fi
+
+  # Claude Code 在 API 出错时仍可能以 0 退出，必须显式检查 envelope，
+  # 否则会退化成「调用成功但输出为空」这种最难查的失败。
+  if [ "$(jq -r '.is_error // false' "$out" 2>/dev/null)" = "true" ]; then
+    warn "claude[$profile] 模型侧返回错误"
+    dump_envelope "$out"
+    return 1
+  fi
+  if [ "$mode" != "code" ] && [ -z "$(jq -r '.result // empty' "$out" 2>/dev/null)" ]; then
+    warn "claude[$profile] 返回内容为空（subtype=$(jq -r '.subtype // "?"' "$out" 2>/dev/null)）"
+    dump_envelope "$out"
+    return 1
+  fi
+  return 0
+}
+
+# 打印 envelope 的关键诊断信息，便于在没有 SSH 的机器上远程定位
+dump_envelope() { # <envelope-json>
+  local f="$1"
+  if [ ! -f "$f" ]; then
+    warn "  envelope 不存在：$f"
+    return 0
+  fi
+  warn "  envelope：$(wc -c < "$f" | tr -d ' ') 字节 | subtype=$(jq -r '.subtype // "?"' "$f" 2>/dev/null) | is_error=$(jq -r '.is_error // "?"' "$f" 2>/dev/null) | api_error_status=$(jq -r '.api_error_status // "-"' "$f" 2>/dev/null) | num_turns=$(jq -r '.num_turns // "-"' "$f" 2>/dev/null) | result 长度=$(jq -r '(.result // "") | length' "$f" 2>/dev/null)"
+  {
+    printf '\n----- result 前 600 字 -----\n'
+    jq -r '.result // "(没有 result 字段)"' "$f" 2>/dev/null | head -c 600
+    printf '\n-----------------------------\n'
+  } >&2
 }
 
 claude_result() { # <envelope-file> —— 打印 .result 文本
