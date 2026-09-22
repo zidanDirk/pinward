@@ -145,7 +145,7 @@ check "parent_of_issue 无标记时返回空" ok $?
 
 echo "== PR / issue 去重检测（用 stub 替掉 gh，不联网）=="
 cat > "$TMP/prs.json" <<'EOF'
-[{"number":12,"headRefName":"ai/6-abc"},{"number":9,"headRefName":"fix/other"}]
+[{"number":12,"headRefName":"ai/6-abc","state":"OPEN"},{"number":9,"headRefName":"fix/other","state":"OPEN"}]
 EOF
 out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="${FIXTURE:-$TMP/prs.json}" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; pr_for_issue 6' _ "$LIB" 2>/dev/null)"
 [ "$out" = "12" ]
@@ -154,6 +154,21 @@ check "pr_for_issue 精确命中 ai/6- 前缀" ok $?
 out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="${FIXTURE:-$TMP/prs.json}" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; pr_for_issue 7' _ "$LIB" 2>/dev/null)"
 [ -z "$out" ]
 check "pr_for_issue 对 ai/7- 返回空（不误伤 ai/6-）" ok $?
+
+# 回归：已关闭未合并的 PR 必须视为不存在，否则一次失败的尝试会永久堵死该子任务
+cat > "$TMP/prs-closed.json" <<'EOF'
+[{"number":13,"headRefName":"ai/6-task","state":"CLOSED"}]
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="$TMP/prs-closed.json" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; pr_for_issue 6' _ "$LIB" 2>/dev/null)"
+[ -z "$out" ]
+check "已关闭未合并的 PR 不算已实现（可重跑）" ok $?
+
+cat > "$TMP/prs-merged.json" <<'EOF'
+[{"number":13,"headRefName":"ai/6-task","state":"MERGED"}]
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="$TMP/prs-merged.json" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; pr_for_issue 6' _ "$LIB" 2>/dev/null)"
+[ "$out" = "13" ]
+check "已合并的 PR 算已实现（不重复做）" ok $?
 
 # 关键回归：gh 往 stdout 写噪声后失败，旧实现会误判成"已有 PR"而静默跳过
 PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; ghq() { printf "[gh notice to stdout]\n"; return 1; }; pr_for_issue 6' _ "$LIB" >/dev/null 2>&1
