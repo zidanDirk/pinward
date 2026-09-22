@@ -396,14 +396,18 @@ implement_one() { # <issue-json>
     cat "$APP_DIR/CLAUDE.md"
   } > "$prompt"
 
-  envelope="$RUN_DIR/implement-$number-envelope.json"
   local attempt=1 ok=0
   while [ "$attempt" -le 2 ]; do
     step "#$number 第 $attempt 次调用实现 agent"
+    # 每次尝试用独立的 envelope/transcript：共用同一个文件名会让后一次
+    # 覆盖前一次的证据（真机踩过：第 2 次只跑 36 秒，把第 1 次 14 分钟的
+    # 完整工具调用记录冲掉，导致"agent 写了哪些文件"的核对变成空）
+    envelope="$RUN_DIR/implement-$number-envelope-a$attempt.json"
     if run_claude m3 "$wt" "$prompt" code "$MAX_TURNS_IMPLEMENT" "$envelope"; then
       # 先从 transcript 核对 agent 把文件写到了哪里：写到工作目录之外是
       # "改动消失"的典型症状，必须显式暴露而不是让它静默变成空提交
-      stream_written_paths "$envelope.stream.jsonl" > "$RUN_DIR/implement-$number-written.txt" 2>/dev/null || true
+      stream_written_paths "$envelope.stream.jsonl" >> "$RUN_DIR/implement-$number-written.txt" 2>/dev/null || true
+      sort -u -o "$RUN_DIR/implement-$number-written.txt" "$RUN_DIR/implement-$number-written.txt" 2>/dev/null || true
       local outside
       outside="$(grep -v "^$wt/" "$RUN_DIR/implement-$number-written.txt" | grep -v '^$' || true)"
       if [ -n "$outside" ]; then
