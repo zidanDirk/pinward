@@ -244,17 +244,29 @@ if [ "$SETUP_UFW" = "0" ]; then
 elif ufw status 2>/dev/null | grep -q "Status: active"; then
   skip "ufw 已启用"
 else
-  SSH_PORT="$(ss -tlnp 2>/dev/null | awk '/sshd/{print $4}' | sed 's/.*://' | sort -u | head -1)"
-  SSH_PORT="${SSH_PORT:-22}"
+  # 探测 SSH 端口。四条来源全部放行：宁可多开一个端口，也不能把自己锁在门外。
+  # 曾经的实现只 grep `ss | sshd`，而 Ubuntu 24.04 默认用 ssh.socket 激活，
+  # 抓不到就退化成了默认值 22 —— 非标准端口的机器会直接被锁。
+  SSH_PORTS="$(
+    {
+      printf '%s\n' "${SSH_CONNECTION:-}" | awk 'NF>=4 {print $4}'
+      grep -rhsE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ 2>/dev/null | awk '{print $2}'
+      systemctl show ssh.socket -p Listen --value 2>/dev/null | grep -oE '[0-9]+$'
+      ss -tlnpH 2>/dev/null | awk '/ssh/ {print $4}' | sed 's/.*://'
+    } | grep -E '^[0-9]+$' | sort -un | tr '\n' ' '
+  )"
+  SSH_PORTS="${SSH_PORTS% }"
+  [ -n "$SSH_PORTS" ] || SSH_PORTS=22
+
   apt-get install -y -qq ufw >/dev/null
   ufw --force default deny incoming >/dev/null
   ufw --force default allow outgoing >/dev/null
-  ufw allow "$SSH_PORT"/tcp >/dev/null
+  for p in $SSH_PORTS; do ufw allow "$p"/tcp >/dev/null; done
   ufw allow 443/tcp >/dev/null
   ufw allow 80/tcp >/dev/null
   ufw --force enable >/dev/null
-  ok "ufw 已启用：放行 SSH $SSH_PORT / 443 / 80，其余入站拒绝"
-  warn "如果 SSH 端口判断有误（当前识别为 $SSH_PORT），请立刻用七牛 Web 命令行执行：ufw allow <正确端口>/tcp"
+  ok "ufw 已启用：放行 SSH 端口 $SSH_PORTS / 443 / 80，其余入站拒绝"
+  warn "若上面列出的端口不包含你实际用于 SSH 的端口，请立刻用 Web 命令行执行：ufw allow <正确端口>/tcp"
 fi
 
 say "安装 systemd 定时任务"
