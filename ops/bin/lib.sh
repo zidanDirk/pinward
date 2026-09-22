@@ -149,10 +149,10 @@ pinward_on_exit() {
   # 正在实现某个子 issue 时，无论怎么退出都要摘掉「运行中」标签；
   # 非零退出还要留下失败标记与指向具体步骤的留言
   if [ -n "${RUNNING_ISSUE:-}" ]; then
-    ghq issue edit "$RUNNING_ISSUE" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
+    ghq_mutate issue edit "$RUNNING_ISSUE" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     if [ "$code" != "0" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-      ghq issue edit "$RUNNING_ISSUE" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-      ghq issue comment "$RUNNING_ISSUE" -R "$GITHUB_REPO" --body \
+      ghq_mutate issue edit "$RUNNING_ISSUE" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+      ghq_mutate issue comment "$RUNNING_ISSUE" -R "$GITHUB_REPO" --body \
 "pinward：本次运行异常中断。
 
 - 退出码：\`$code\`
@@ -186,6 +186,17 @@ state_key_issue() { printf 'issue:%s' "$1"; }
 # ---------------------------------------------------------------- GitHub
 
 ghq() { gh "$@"; }
+
+# 所有会改动远端的 gh 调用都必须走这里，dry-run 时自动短路。
+# 真机教训：dry-run 用的是真仓库 + 真 token，"我没写"不等于"写不了" ——
+# heal_stale_running_labels 就曾经差点去删真 issue 的标签。
+ghq_mutate() {
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    _tee_log "$(printf '%s [%s] [dry-run] 跳过远端写操作：gh %s' "$(date '+%F %T')" "$LOG_PREFIX" "$*")"
+    return 0
+  fi
+  gh "$@"
+}
 
 issue_labels() { # <json-issue> -> 逗号分隔标签
   printf '%s' "$1" | jq -r '[.labels[].name] | join(",")'
@@ -450,8 +461,8 @@ heal_stale_running_labels() {
   [ -n "$stale" ] || return 0
   for n in $stale; do
     warn "#$n 残留「${LABEL_RUNNING}」标签：上次运行异常中断，自动清理并留言"
-    ghq issue edit "$n" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
-    ghq issue comment "$n" -R "$GITHUB_REPO" --body \
+    ghq_mutate issue edit "$n" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
+    ghq_mutate issue comment "$n" -R "$GITHUB_REPO" --body \
       "pinward：检测到上一次运行异常中断（残留 \`$LABEL_RUNNING\` 标签）。已自动清理，本轮会重新尝试实现。若反复出现，请查看服务器 \`$STATE_DIR/runs/<日期>/run.log\`。" \
       >/dev/null 2>&1 || true
   done

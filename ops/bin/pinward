@@ -139,7 +139,7 @@ cmd_research() {
   } > "$RUN_DIR/issue-body.md"
 
   local url
-  url="$(ghq issue create -R "$GITHUB_REPO" \
+  url="$(ghq_mutate issue create -R "$GITHUB_REPO" \
     --title "$full_title" \
     --body-file "$RUN_DIR/issue-body.md" \
     --label "$LABEL_PENDING")"
@@ -210,7 +210,7 @@ split_one() { # <issue-json>
       printf '\n<!-- pinward-parent:%s -->\n' "$number"
     } > "$RUN_DIR/split-$number-child-$i-full.md"
 
-    child_url="$(ghq issue create -R "$GITHUB_REPO" \
+    child_url="$(ghq_mutate issue create -R "$GITHUB_REPO" \
       --title "$(jq -r ".[$i].title" "$payload")" \
       --body-file "$RUN_DIR/split-$number-child-$i-full.md" \
       --label "$LABEL_APPROVED" --label "$LABEL_CHILD")"
@@ -228,8 +228,8 @@ split_one() { # <issue-json>
     printf '\n子任务均已标记「%s」，将在 10:30 由 MiniMax M3 实现并逐个提交 PR。\n' "$LABEL_APPROVED"
   } > "$RUN_DIR/split-$number-comment.md"
 
-  ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/split-$number-comment.md" >/dev/null
-  ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_SPLIT" >/dev/null
+  ghq_mutate issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/split-$number-comment.md" >/dev/null
+  ghq_mutate issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_SPLIT" >/dev/null
   state_put "$(state_key_issue "$number")" \
     "$(jq -nc --argjson c "$count" --argjson ch "$(printf '%s\n' "${child_numbers[@]}" | jq -R . | jq -sc .)" \
         '{stage:"split", children:$ch, count:$c}')"
@@ -275,8 +275,8 @@ cmd_split() {
       local num
       num="$(jq -r '.number' <<<"$one")"
       if [ "$DRY_RUN" != "1" ]; then
-        ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-        ghq issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「${LABEL_FAILED}」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
+        ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+        ghq_mutate issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「${LABEL_FAILED}」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
       fi
     fi
   done
@@ -452,8 +452,8 @@ implement_one() { # <issue-json>
         tail -n 60 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
         printf '\n```\n'
       } > "$RUN_DIR/implement-$number-failcomment.md"
-      ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-      ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/implement-$number-failcomment.md" >/dev/null 2>&1 || true
+      ghq_mutate issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+      ghq_mutate issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/implement-$number-failcomment.md" >/dev/null 2>&1 || true
     fi
     return 1
   fi
@@ -507,11 +507,11 @@ implement_one() { # <issue-json>
   } > "$RUN_DIR/implement-$number-prbody.md"
 
   local pr_url
-  pr_url="$(ghq pr create -R "$GITHUB_REPO" --draft \
+  pr_url="$(ghq_mutate pr create -R "$GITHUB_REPO" --draft \
     --base "$BASE_BRANCH" --head "$branch" \
     --title "$message" --body-file "$RUN_DIR/implement-$number-prbody.md")"
 
-  ghq issue comment "$number" -R "$GITHUB_REPO" \
+  ghq_mutate issue comment "$number" -R "$GITHUB_REPO" \
     --body "pinward：已提交 draft PR ${pr_url}（分支 \`$branch\`），等待人工评审合并。" >/dev/null
   state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" --argjson par "${parent:-0}" '{stage:"pr_open",branch:$b,pr:$p,parent:$par}')"
   echo "IMPLEMENT OK: #$number -> $pr_url"
@@ -566,7 +566,7 @@ cmd_implement() {
     RUNNING_ISSUE="$num"
     export RUNNING_ISSUE
     if [ "$DRY_RUN" != "1" ]; then
-      ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
+      ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     fi
     if implement_one "$one"; then
       done_count=$((done_count + 1))
@@ -574,7 +574,7 @@ cmd_implement() {
       failed=$((failed + 1))
     fi
     if [ "$DRY_RUN" != "1" ]; then
-      ghq issue edit "$num" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
+      ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     fi
     RUNNING_ISSUE=""
     export RUNNING_ISSUE
