@@ -27,7 +27,7 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=6
 
 # 单次运行最长 2 小时
-TimeoutStartSec=7200
+TimeoutStartSec=14400
 TimeoutStopSec=60
 KillMode=mixed
 
