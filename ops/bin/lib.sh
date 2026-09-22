@@ -306,11 +306,16 @@ parent_of_issue() { # <issue-json> —— 从子 issue 正文里的 pinward-pare
 # 返回：0 且 stdout 为 PR 号或空串 = 查询成功；非 0 = 查询不可用，调用方应继续执行。
 pr_for_issue() { # <issue-number>
   local n="$1" raw
-  raw="$(ghq pr list -R "$GITHUB_REPO" --state all --limit 200 --json number,headRefName 2>/dev/null || true)"
+  raw="$(ghq pr list -R "$GITHUB_REPO" --state all --limit 200 --json number,headRefName,state 2>/dev/null || true)"
   if ! printf '%s' "$raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
     return 1
   fi
-  printf '%s' "$raw" | jq -r --arg p "ai/$n-" '[.[] | select(.headRefName | startswith($p))] | (.[0].number // empty)'
+  # 只认 OPEN 与 MERGED：已经关闭但未合并的 PR 表示"上一轮尝试被放弃"，
+  # 应当允许重新实现，否则一次失败的尝试会永久堵死这个子任务。
+  printf '%s' "$raw" | jq -r --arg p "ai/$n-" '
+    [ .[] | select(.headRefName | startswith($p))
+          | select(.state == "OPEN" or .state == "MERGED") ]
+    | (.[0].number // empty)'
   return 0
 }
 
