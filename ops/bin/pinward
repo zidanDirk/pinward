@@ -164,6 +164,9 @@ split_one() { # <issue-json>
     printf '\n\n## 仓库文件清单\n\n```\n'
     git -C "$APP_DIR" ls-files | grep -v '^ops/' || true
     printf '```\n'
+    printf '\n\n## 现有模块 API 一览（真机提取，只能引用这里出现过的标识符）\n\n```\n'
+    node "$OPS_DIR/bin/repo-surface.mjs" "$APP_DIR/src" || true
+    printf '```\n'
     printf '\n\n## 项目约定（CLAUDE.md）\n\n'
     cat "$APP_DIR/CLAUDE.md"
   } > "$prompt"
@@ -461,7 +464,9 @@ implement_one() { # <issue-json>
     printf '```\n$ npm run check && npm test\n'
     tail -n 12 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
     printf '```\n\n'
-    printf '> 由人工评审后合并。请勿直接推 master。\n'
+    printf '## 实现说明（模型自述，未经人工核实）\n\n'
+    claude_result "$envelope" 2>/dev/null | head -c 3000 || true
+    printf '\n\n> 由人工评审后合并。请勿直接推 master。\n'
   } > "$RUN_DIR/implement-$number-prbody.md"
 
   local pr_url

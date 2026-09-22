@@ -134,6 +134,8 @@ systemd 单元还有 `MemoryHigh=1200M` / `MemoryMax=1700M`，超限只杀本单
 | issue 创建了但内容是废话 | `state/runs/<日期>/research.json` 与 `research-validation.log` |
 | research 报「未能从模型输出中提取 JSON」 | 跑 `pinward logs`。看 envelope 的 `modelUsage`：出现 `MiniMax-M3[1M]` 说明 `settings.json` 覆盖了 `ANTHROPIC_MODEL`（已用 `--model` 锁定）；`usage.output_tokens` 贴近上限说明输出被截断（已设 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000` 并有重试） |
 | 实施 agent 改完代码但测试不过 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论与「AI失败」标签 |
+| 子任务里出现了代码中不存在的字段名 | 拆分阶段只能看到文件清单，会臆造标识符。现已在拆分提示词里注入 `repo-surface.mjs` 提取的真实 API 一览，并规定只能引用其中出现过的名字；实施 agent 也被要求「禁止发明标识符」并在 PR 的「实现说明」里报告差异 |
+| PR 通过了测试但实现是错的 | `npm test` 全绿不代表语义正确。务必读 PR 正文的「实现说明（模型自述）」与「与子任务描述的差异」，再看测试是否真的执行了被测逻辑（恒真的同义反复测试是最常见的凑数手法） |
 | `split` 没动作 | 确认 issue 是 `同意实现` 且**没有** `子任务`/`已拆分`/`AI失败` 标签 |
 | PR 没建出来 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论 |
 | 卡在锁 | `state/runs/<日期>/skipped.log`；检查是否有残留的 `claude` 进程 |
