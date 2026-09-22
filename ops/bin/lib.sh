@@ -49,9 +49,21 @@ mkdir -p "$STATE_DIR" "$RUN_DIR" "$WORKTREE_DIR" "$SCRATCH_DIR"
 
 # ---------------------------------------------------------------- 日志
 
-log()  { printf '%s [%s] %s\n' "$(date '+%F %T')" "$LOG_PREFIX" "$*" >&2; }
-warn() { printf '%s [%s] WARN %s\n' "$(date '+%F %T')" "$LOG_PREFIX" "$*" >&2; }
-die()  { printf '%s [%s] ERROR %s\n' "$(date '+%F %T')" "$LOG_PREFIX" "$*" >&2; exit 1; }
+# 所有日志同时写终端与 LOG_FILE。真机事故：进程中途死掉时 run.log 只有 claude 的
+# stderr，pinward 自己的执行轨迹一条都没有 —— 等于没有现场。
+_tee_log() { # <文本>
+  printf '%s\n' "$1" >&2
+  if [ -n "${LOG_FILE:-}" ] && [ "$LOG_FILE" != "/dev/null" ]; then
+    printf '%s\n' "$1" >> "$LOG_FILE" 2>/dev/null || true
+  fi
+}
+log()  { _tee_log "$(printf '%s [%s] %s' "$(date '+%F %T')" "$LOG_PREFIX" "$*")"; }
+warn() { _tee_log "$(printf '%s [%s] WARN %s' "$(date '+%F %T')" "$LOG_PREFIX" "$*")"; }
+die()  { _tee_log "$(printf '%s [%s] ERROR %s' "$(date '+%F %T')" "$LOG_PREFIX" "$*")"; exit 1; }
+step() { # 关键步骤打点：异常中断时靠它定位死在哪一步
+  export PINWARD_STEP="$*"
+  _tee_log "$(printf '%s [%s] STEP %s' "$(date '+%F %T')" "$LOG_PREFIX" "$*")"
+}
 
 require_cmd() {
   local c
@@ -74,15 +86,84 @@ with_timeout() { # <seconds> <outfile> <cmd...>
 
 # ---------------------------------------------------------------- 锁
 
-take_lock() {
-  exec 9>"$STATE_DIR/pinward.lock"
-  if ! flock -w "${LOCK_WAIT_SECONDS:-600}" 9; then
-    warn "等待锁超时（${LOCK_WAIT_SECONDS:-600}s），本次跳过（已有实例长时间运行）"
-    mkdir -p "$RUN_DIR"
-    date '+%F %T 跳过：锁超时' >> "$RUN_DIR/skipped.log"
-    echo "SKIPPED: 锁超时"
-    exit 0
+# 用 mkdir 原子锁取代 flock：既不依赖 util-linux（可在 macOS 上测），
+# 又能识别"持有者已死"的陈旧锁并自动接管 —— 被 OOM 杀掉时 flock 会自动释放，
+# 但 mkdir 锁不会，必须自己判断，否则一次崩溃会永久堵住后续所有运行。
+LOCK_DIR=""
+RUNNING_ISSUE=""
+PINWARD_STEP=""
+PINWARD_EXIT_HANDLER_SET=0
+
+release_lock() {
+  if [ -n "${LOCK_DIR:-}" ]; then
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+    LOCK_DIR=""
   fi
+}
+
+take_lock() {
+  local lockdir="$STATE_DIR/pinward.lock.d"
+  local wait_max="${LOCK_WAIT_SECONDS:-600}" waited=0 holder=""
+
+  while ! mkdir "$lockdir" 2>/dev/null; do
+    holder=""
+    [ -f "$lockdir/pid" ] && holder="$(cat "$lockdir/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      warn "发现陈旧锁（pid $holder 已不存在，可能是上次异常中断），接管"
+      rm -rf "$lockdir" 2>/dev/null || true
+      continue
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    if [ "$waited" -ge "$wait_max" ]; then
+      warn "等待锁超时（${wait_max}s，持有者 pid ${holder:-未知}），本次跳过"
+      mkdir -p "$RUN_DIR"
+      printf '%s 跳过：锁超时（持有者 pid %s）\n' "$(date '+%F %T')" "${holder:-未知}" >> "$RUN_DIR/skipped.log" 2>/dev/null || true
+      echo "SKIPPED: 锁超时"
+      exit 0
+    fi
+  done
+
+  printf '%s\n' "$$" > "$lockdir/pid" 2>/dev/null || true
+  LOCK_DIR="$lockdir"
+  install_exit_handler
+  return 0
+}
+
+# 唯一的 EXIT 处理器。放在这里而不是各处分别 trap，避免后设的覆盖先设的。
+install_exit_handler() {
+  [ "$PINWARD_EXIT_HANDLER_SET" = "1" ] && return 0
+  PINWARD_EXIT_HANDLER_SET=1
+  trap 'pinward_on_exit $?' EXIT
+}
+
+pinward_on_exit() {
+  local code="$1"
+  release_lock
+
+  if [ "$code" != "0" ]; then
+    _tee_log "$(printf '%s [%s] ERROR 异常退出 code=%s，最后步骤=%s，日志=%s' \
+      "$(date '+%F %T')" "$LOG_PREFIX" "$code" "${PINWARD_STEP:-未打点}" "${LOG_FILE:-无}")"
+  fi
+
+  # 正在实现某个子 issue 时，无论怎么退出都要摘掉「运行中」标签；
+  # 非零退出还要留下失败标记与指向具体步骤的留言
+  if [ -n "${RUNNING_ISSUE:-}" ]; then
+    ghq issue edit "$RUNNING_ISSUE" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
+    if [ "$code" != "0" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+      ghq issue edit "$RUNNING_ISSUE" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+      ghq issue comment "$RUNNING_ISSUE" -R "$GITHUB_REPO" --body \
+"pinward：本次运行异常中断。
+
+- 退出码：\`$code\`
+- 最后执行到的步骤：\`${PINWARD_STEP:-未打点}\`
+- 服务器日志：\`${LOG_FILE:-无}\`
+
+请查看上述日志；修复后移除 \`$LABEL_FAILED\` 标签即可重试。" >/dev/null 2>&1 || true
+    fi
+    RUNNING_ISSUE=""
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------- 状态
@@ -357,6 +438,23 @@ research_issue_count() { # <date>
   count="$(printf '%s' "$raw" | jq -r --arg d "$d" '[.[] | select(.title | startswith("「每日资讯」" + $d))] | length')"
   printf '%s' "$count" | grep -qE '^[0-9]+$' || return 1
   printf '%s' "$count"
+  return 0
+}
+
+# 清理上一次异常中断残留的「运行中」标签。放在抢到锁之后调用：
+# 此时能确定没有其他实例在跑，凡是还挂着该标签的都是上次崩溃留下的。
+heal_stale_running_labels() {
+  local stale n
+  stale="$(ghq issue list -R "$GITHUB_REPO" --label "$LABEL_RUNNING" --state open --limit 50 \
+    --json number --jq '.[].number' 2>/dev/null || true)"
+  [ -n "$stale" ] || return 0
+  for n in $stale; do
+    warn "#$n 残留「$LABEL_RUNNING」标签：上次运行异常中断，自动清理并留言"
+    ghq issue edit "$n" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
+    ghq issue comment "$n" -R "$GITHUB_REPO" --body \
+      "pinward：检测到上一次运行异常中断（残留 \`$LABEL_RUNNING\` 标签）。已自动清理，本轮会重新尝试实现。若反复出现，请查看服务器 \`$STATE_DIR/runs/<日期>/run.log\`。" \
+      >/dev/null 2>&1 || true
+  done
   return 0
 }
 

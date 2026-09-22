@@ -138,6 +138,9 @@ Claude Code 探测项目根时可能一路解析到主仓库，从而把文件�
 
 systemd 单元还有 `MemoryHigh=1200M` / `MemoryMax=1700M`，超限只杀本单元，不拖垮整机。
 
+> 注意：被 OOM 杀掉时收到的是 SIGKILL，**任何 trap 都不会执行**。因此「运行中」标签的清理
+> 不能只靠出口处理器，必须由下一次运行在抢到锁之后自愈 —— `heal_stale_running_labels` 就是干这个的。
+
 ## 故障排查
 
 | 现象 | 先看 |
@@ -151,7 +154,9 @@ systemd 单元还有 `MemoryHigh=1200M` / `MemoryMax=1700M`，超限只杀本单
 | PR 通过了测试但实现是错的 | `npm test` 全绿不代表语义正确。务必读 PR 正文的「实现说明（模型自述）」与「与子任务描述的差异」，再看测试是否真的执行了被测逻辑（恒真的同义反复测试是最常见的凑数手法） |
 | `split` 没动作 | 确认 issue 是 `同意实现` 且**没有** `子任务`/`已拆分`/`AI失败` 标签 |
 | PR 没建出来 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论 |
-| 卡在锁 | `state/runs/<日期>/skipped.log`；检查是否有残留的 `claude` 进程 |
+| 卡在锁 | `state/runs/<日期>/skipped.log`；查看 `/opt/pinward/state/pinward.lock.d/pid` 里的持有者。持有者进程已死时下次运行会**自动接管** |
+| 运行卡住不动、issue 上一直挂着「AI实现中」 | 该标签只在正常或失败流程里被摘掉。若是崩溃/OOM 导致，下次 implement 启动时会**自愈**：抢到锁后清理残留标签并留言 |
+| 不知道上次跑到哪一步 | `run.log` 现在同时记录 pinward 自身的全部日志与 `STEP` 打点（此前只记 claude 的 stderr）。异常退出会额外写一行 `ERROR 异常退出 code=… 最后步骤=…` |
 | implement 报「已有 PR，跳过」但其实没有 PR | 旧版用 GitHub 搜索判断是否存在 PR，`gh` 失败时写到 stdout 的噪声会被误判成"存在"。现已改为按 `ai/<N>-` 分支名**精确匹配**，且查询不可用时会**继续执行**——宁可重复一个 PR，也不静默跳过 |
 | 模型 401 | `pinward doctor` 看两个模型回显；确认 base URL（MiniMax 国际站 `api.minimax.io`） |
 

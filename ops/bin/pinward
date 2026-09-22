@@ -348,12 +348,15 @@ implement_one() { # <issue-json>
   # <APP_DIR>/.git/worktrees/<name>，Claude Code 探测项目根时可能一路解析到主仓库，
   # 于是 agent 把文件写进 APP_DIR 而工作目录保持干净 —— 表现为"提交为空却报成功"。
   # 独立 clone 让这种路径歧义不可能发生。
+  step "#$number 准备实现目录"
   if [ ! -d "$wt/.git" ]; then
     rm -rf "$wt"
+    step "#$number 首次克隆 $GITHUB_REPO"
     git clone --quiet "https://github.com/$GITHUB_REPO.git" "$wt" >/dev/null 2>&1 \
       || die "无法创建实现用克隆：$wt"
   fi
   git -C "$wt" remote set-url origin "https://github.com/$GITHUB_REPO.git"
+  step "#$number 同步分支 $branch"
   git -C "$wt" fetch --prune --quiet origin
   git -C "$wt" checkout -q -f -B "$branch" "origin/$BASE_BRANCH"
   git -C "$wt" reset --hard --quiet "origin/$BASE_BRANCH"
@@ -396,6 +399,7 @@ implement_one() { # <issue-json>
   envelope="$RUN_DIR/implement-$number-envelope.json"
   local attempt=1 ok=0
   while [ "$attempt" -le 2 ]; do
+    step "#$number 第 $attempt 次调用实现 agent"
     if run_claude m3 "$wt" "$prompt" code "$MAX_TURNS_IMPLEMENT" "$envelope"; then
       # 先从 transcript 核对 agent 把文件写到了哪里：写到工作目录之外是
       # "改动消失"的典型症状，必须显式暴露而不是让它静默变成空提交
@@ -420,6 +424,7 @@ implement_one() { # <issue-json>
         attempt=$((attempt + 1))
         continue
       fi
+      step "#$number 跑 npm check + test"
       if ( cd "$wt" && npm run check >"$RUN_DIR/implement-$number-check.log" 2>&1 && npm test >"$RUN_DIR/implement-$number-test.log" 2>&1 ); then
         ok=1
         break
@@ -467,6 +472,7 @@ implement_one() { # <issue-json>
     return 0
   fi
 
+  step "#$number 提交并推送 $branch"
   ( cd "$wt" && git add -A && { git diff --cached --quiet || git commit -q -m "$message"; } )
   default_branch_guard "$branch"
   # 清掉上一次失败留下的同名远端分支，避免 push 被拒
@@ -520,6 +526,9 @@ cmd_implement() {
   git_auth_check
   [ -n "${MINIMAX_API_KEY:-}" ] || die "MINIMAX_API_KEY 未设置"
 
+  # 已经抢到锁，说明没有别的实例在跑；此时还挂着「运行中」标签的都是上次崩掉的
+  heal_stale_running_labels
+
   sync_app
 
   local issues todo count
@@ -551,8 +560,10 @@ cmd_implement() {
     local one num
     one="$(jq -c ".[$i]" <<<"$todo")"
     num="$(jq -r '.number' <<<"$one")"
+    RUNNING_ISSUE="$num"
+    export RUNNING_ISSUE
     if [ "$DRY_RUN" != "1" ]; then
-      ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "AI实现中" >/dev/null 2>&1 || true
+      ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     fi
     if implement_one "$one"; then
       done_count=$((done_count + 1))
@@ -560,8 +571,10 @@ cmd_implement() {
       failed=$((failed + 1))
     fi
     if [ "$DRY_RUN" != "1" ]; then
-      ghq issue edit "$num" -R "$GITHUB_REPO" --remove-label "AI实现中" >/dev/null 2>&1 || true
+      ghq issue edit "$num" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     fi
+    RUNNING_ISSUE=""
+    export RUNNING_ISSUE
   done
 
   notify_failure "pinward 实现完成 $RUN_DATE" "尝试 $count，成功 $done_count，失败 $failed"
