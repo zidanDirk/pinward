@@ -137,6 +137,7 @@ systemd 单元还有 `MemoryHigh=1200M` / `MemoryMax=1700M`，超限只杀本单
 | `split` 没动作 | 确认 issue 是 `同意实现` 且**没有** `子任务`/`已拆分`/`AI失败` 标签 |
 | PR 没建出来 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论 |
 | 卡在锁 | `state/runs/<日期>/skipped.log`；检查是否有残留的 `claude` 进程 |
+| implement 报「已有 PR，跳过」但其实没有 PR | 旧版用 GitHub 搜索判断是否存在 PR，`gh` 失败时写到 stdout 的噪声会被误判成"存在"。现已改为按 `ai/<N>-` 分支名**精确匹配**，且查询不可用时会**继续执行**——宁可重复一个 PR，也不静默跳过 |
 | 模型 401 | `pinward doctor` 看两个模型回显；确认 base URL（MiniMax 国际站 `api.minimax.io`） |
 
 ## 后续加固（未实现，按需开启）

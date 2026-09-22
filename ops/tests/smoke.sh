@@ -143,6 +143,36 @@ out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; parent_of
 [ -z "$out" ]
 check "parent_of_issue 无标记时返回空" ok $?
 
+echo "== PR / issue 去重检测（用 stub 替掉 gh，不联网）=="
+cat > "$TMP/prs.json" <<'EOF'
+[{"number":12,"headRefName":"ai/6-abc"},{"number":9,"headRefName":"fix/other"}]
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="${FIXTURE:-$TMP/prs.json}" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; pr_for_issue 6' _ "$LIB" 2>/dev/null)"
+[ "$out" = "12" ]
+check "pr_for_issue 精确命中 ai/6- 前缀" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="${FIXTURE:-$TMP/prs.json}" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; pr_for_issue 7' _ "$LIB" 2>/dev/null)"
+[ -z "$out" ]
+check "pr_for_issue 对 ai/7- 返回空（不误伤 ai/6-）" ok $?
+
+# 关键回归：gh 往 stdout 写噪声后失败，旧实现会误判成"已有 PR"而静默跳过
+PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; ghq() { printf "[gh notice to stdout]\n"; return 1; }; pr_for_issue 6' _ "$LIB" >/dev/null 2>&1
+check "gh 失败时 pr_for_issue 返回非 0（调用方会继续执行）" fail $?
+
+cat > "$TMP/issues.json" <<'EOF'
+[{"number":5,"title":"「每日资讯」2026-09-22 某建议"},{"number":4,"title":"别的 issue"}]
+EOF
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="$TMP/issues.json" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; research_issue_count 2026-09-22' _ "$LIB" 2>/dev/null)"
+[ "$out" = "1" ]
+check "research_issue_count 命中当天" ok $?
+
+out="$(PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" FIXTURE="$TMP/issues.json" bash -c 'source "$1"; ghq() { cat "$FIXTURE"; }; research_issue_count 2026-09-23' _ "$LIB" 2>/dev/null)"
+[ "$out" = "0" ]
+check "research_issue_count 对其它日期返回 0" ok $?
+
+PINWARD_ROOT="$TMP/root" STATE_DIR="$TMP" bash -c 'source "$1"; ghq() { printf "not json at all\n"; return 1; }; research_issue_count 2026-09-22' _ "$LIB" >/dev/null 2>&1
+check "输出非 JSON 时 research_issue_count 返回非 0" fail $?
+
 echo "== 脚本可解析性 =="
 bash -n "$OPS_DIR/bin/pinward"; check "pinward 语法" ok $?
 bash -n "$OPS_DIR/bin/lib.sh"; check "lib.sh 语法" ok $?

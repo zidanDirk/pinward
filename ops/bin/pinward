@@ -121,10 +121,13 @@ cmd_research() {
   fi
 
   local existing
-  existing="$(ghq issue list -R "$GITHUB_REPO" --state all --search "$RUN_DATE in:title" --json title --jq '[.[] | select(.title | startswith("「每日资讯」"))] | length')"
-  if [ "$existing" != "0" ]; then
-    log "今天已存在同类 issue（$existing 条），跳过创建"
-    return 0
+  if existing="$(research_issue_count "$RUN_DATE")"; then
+    if [ "$existing" != "0" ]; then
+      log "今天已存在同类 issue（$existing 条），跳过创建"
+      return 0
+    fi
+  else
+    warn "无法确认今天是否已建过 issue，继续创建（宁可重复，也不静默跳过）"
   fi
 
   {
@@ -318,12 +321,15 @@ implement_one() { # <issue-json>
   wt="$WORKTREE_DIR/current"
 
   if [ "$DRY_RUN" != "1" ]; then
-    local existing
-    existing="$(ghq pr list -R "$GITHUB_REPO" --state all --search "pinward-issue: $number in:body" --json number --jq 'length' 2>/dev/null || echo 0)"
-    if [ "$existing" != "0" ]; then
-      log "#$number 已有 PR，跳过"
-      state_put "$(state_key_issue "$number")" '{"stage":"pr_open"}'
-      return 0
+    local existing_pr=""
+    if existing_pr="$(pr_for_issue "$number")"; then
+      if [ -n "$existing_pr" ]; then
+        log "#$number 已有 PR #$existing_pr，跳过"
+        state_put "$(state_key_issue "$number")" '{"stage":"pr_open"}'
+        return 0
+      fi
+    else
+      warn "无法确认 #$number 是否已有 PR，继续执行（宁可重复，也不静默跳过）"
     fi
   fi
 
