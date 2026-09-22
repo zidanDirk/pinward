@@ -177,6 +177,7 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=${MINIMAX_MODEL_LONG:-MiniMax-M3[1M]}
 ANTHROPIC_DEFAULT_HAIKU_MODEL=${MINIMAX_MODEL:-MiniMax-M3}
 ANTHROPIC_SMALL_FAST_MODEL=${MINIMAX_MODEL:-MiniMax-M3}
 CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=${MINIMAX_MAX_OUTPUT_TOKENS:-32000}
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 API_TIMEOUT_MS=600000
 CLAUDE_CONFIG_DIR=$HOME/.claude-m3
@@ -212,7 +213,13 @@ run_claude() {
   local -a profile_env=()
   while IFS= read -r line; do profile_env+=("$line"); done < <(claude_profile_env "$profile")
 
+  # 显式 --model：MiniMax 文档只保证 AUTH_TOKEN/BASE_URL 优先于 settings.json，
+  # ANTHROPIC_MODEL 会被 settings.json 覆盖（真机踩过：以为在用 MiniMax-M3，
+  # 实际跑的是 [1M] 变体）。CLI 参数优先级最高，不受配置文件影响。
+  local model_name
+  model_name="$(printf '%s\n' "${profile_env[@]}" | sed -n 's/^ANTHROPIC_MODEL=//p' | head -1)"
   local -a mode_args=(--max-turns "$max_turns")
+  [ -n "$model_name" ] && mode_args+=(--model "$model_name")
   if [ "$mode" = "code" ]; then
     if [ "$PINWARD_BYPASS_PERMISSIONS" = "1" ]; then
       mode_args+=(--dangerously-skip-permissions)

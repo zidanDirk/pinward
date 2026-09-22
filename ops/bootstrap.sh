@@ -146,6 +146,7 @@ DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY
 MINIMAX_BASE_URL=$MINIMAX_BASE_URL
 MINIMAX_MODEL=${MINIMAX_MODEL:-MiniMax-M3}
 MINIMAX_MODEL_LONG=${MINIMAX_MODEL_LONG:-MiniMax-M3[1M]}
+MINIMAX_MAX_OUTPUT_TOKENS=32000
 DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}
 DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-flash}
 PINWARD_WEBHOOK_URL=${PINWARD_WEBHOOK_URL:-}
@@ -166,8 +167,8 @@ EOF
 fi
 
 # Claude Code 两套独立配置目录，避免模型配置互相污染
-write_profile() { # <profile> <base-url> <model> <small-model>
-  local profile="$1" base="$2" model="$3" small="$4"
+write_profile() { # <profile> <base-url> <model> <long-model> <small-model>
+  local profile="$1" base="$2" model="$3" long="$4" small="$5"
   local cfg_dir="/home/$AGENT_USER/.claude-$profile"
   mkdir -p "$cfg_dir"
   cat > "$cfg_dir/settings.json" <<EOF
@@ -176,8 +177,8 @@ write_profile() { # <profile> <base-url> <model> <small-model>
         "ANTHROPIC_BASE_URL": "$base",
         "ANTHROPIC_MODEL": "$model",
         "ANTHROPIC_SMALL_FAST_MODEL": "$small",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "$model",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "$model",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "$long",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "$long",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "$small",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "API_TIMEOUT_MS": "600000"
@@ -203,10 +204,12 @@ EOF
 
 write_profile m3 \
   "${MINIMAX_BASE_URL:-https://api.minimaxi.com/anthropic}" \
+  "${MINIMAX_MODEL:-MiniMax-M3}" \
   "${MINIMAX_MODEL_LONG:-MiniMax-M3[1M]}" \
   "${MINIMAX_MODEL:-MiniMax-M3}"
 write_profile flash \
   "${DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}" \
+  "${DEEPSEEK_MODEL:-deepseek-flash}" \
   "${DEEPSEEK_MODEL:-deepseek-flash}" \
   "${DEEPSEEK_MODEL:-deepseek-flash}"
 

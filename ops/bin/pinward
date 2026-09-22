@@ -82,6 +82,13 @@ cmd_research() {
   for attempt in 1 2; do
     if [ "$attempt" = "2" ]; then
       log "重试一次（第 1 次模型输出不可用）"
+      {
+        printf '\n\n## 上一次输出被判定为不可用\n\n'
+        printf '你上一次的回复要么包含推理过程，要么被输出长度上限截断，无法解析为 JSON。这次请：\n\n'
+        printf '1. 第一行就是 `{`，最后一行就是 `}`，前后不要有任何文字、标签或代码围栏；\n'
+        printf '2. 不要输出任何推理、思考、解释、计划；\n'
+        printf '3. body_markdown 控制在 400-900 字，宁短勿长，优先保证 JSON 结构完整。\n'
+      } >> "$prompt"
     fi
     if run_claude m3 "$SCRATCH_DIR" "$prompt" text "$MAX_TURNS_TEXT" "$envelope" \
        && claude_result "$envelope" | node "$OPS_DIR/bin/json-extract.mjs" > "$payload" 2>/dev/null; then
