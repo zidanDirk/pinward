@@ -148,7 +148,7 @@ systemd 单元还有 `MemoryHigh=1200M` / `MemoryMax=1700M`，超限只杀本单
 | 早上没有新 issue | `journalctl -u pinward@research -n 100`；`state/runs/<日期>/digest.md` 里「本次抓取失败」小节 |
 | issue 创建了但内容是废话 | `state/runs/<日期>/research.json` 与 `research-validation.log` |
 | research 报「未能从模型输出中提取 JSON」 | 跑 `pinward logs`。看 envelope 的 `modelUsage`：出现 `MiniMax-M3[1M]` 说明 `settings.json` 覆盖了 `ANTHROPIC_MODEL`（已用 `--model` 锁定）；`usage.output_tokens` 贴近上限说明输出被截断（已设 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000` 并有重试） |
-| implement 日志出现 `subtype=error_max_turns` | 轮数用尽 —— agent 的改动**仍留在工作目录里**，重试会接着用。若反复出现，调大 `MAX_TURNS_IMPLEMENT` 并在提示词里提醒省轮数 |
+| implement 日志出现 `subtype=error_max_turns` | 轮数用尽。**这不等于实现失败**：agent 常已把代码写完、只是在做最后验证，工作区里的改动仍会被照常验收（改动存在 + 不碰受保护路径 + `npm run check && npm test` 全绿即通过）。若反复出现且改动不完整，调大 `MAX_TURNS_IMPLEMENT` |
 | 实施 agent 改完代码但测试不过 | `state/runs/<日期>/implement-<N>-test.log`；issue 上会有失败评论与「AI失败」标签 |
 | 子任务里出现了代码中不存在的字段名 | 拆分阶段只能看到文件清单，会臆造标识符。现已在拆分提示词里注入 `repo-surface.mjs` 提取的真实 API 一览，并规定只能引用其中出现过的名字；实施 agent 也被要求「禁止发明标识符」并在 PR 的「实现说明」里报告差异 |
 | implement 报成功但 PR 里没有任何改动 | 先看 `state/runs/<日期>/implement-<N>-written.txt`（agent 实际写入的绝对路径，取自 transcript）。若路径不在 `/opt/pinward/worktrees/current/` 下，说明 agent 把文件写到了别处 —— 这正是把实现目录从 `git worktree` 改成独立克隆的原因。transcript 全文在 `implement-<N>-envelope.json.stream.jsonl` |
