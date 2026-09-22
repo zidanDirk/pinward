@@ -273,7 +273,7 @@ cmd_split() {
       num="$(jq -r '.number' <<<"$one")"
       if [ "$DRY_RUN" != "1" ]; then
         ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-        ghq_mutate issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「${LABEL_FAILED}」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
+        ghq_mutate issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「${LABEL_FAILED}」。重试方式：\`pinward split --issue $num\`（会忽略该标签），或移除标签等待下次定时运行。" >/dev/null 2>&1 || true
       fi
     fi
   done
@@ -459,6 +459,7 @@ implement_one() { # <issue-json>
     if [ "$DRY_RUN" != "1" ]; then
       {
         printf 'pinward：自动实现失败。\n\n'
+        printf '> 重试：`pinward implement --issue %s`（会忽略「%s」标签），或移除该标签等待下次定时运行。\n\n' "$number" "$LABEL_FAILED"
         printf -- '- 分支：`%s`\n- 改动：%s 个文件\n- 验证日志：见服务器 `%s`\n\n' \
           "$branch" "$(wc -l < "$RUN_DIR/implement-$number-files.txt" 2>/dev/null || echo 0)" "$RUN_DIR"
         printf '```\n'
