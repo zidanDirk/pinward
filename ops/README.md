@@ -50,6 +50,15 @@ sudo bash ops/bootstrap.sh        # 幂等，会交互式询问三个密钥
 
 `bootstrap.sh` 会：设置时区 → 建 4GB swap → 装 Node 22 / gh / jq → 建无 sudo 的 `pinward` 用户 → 装 Claude Code → 写两套模型配置 → 写密钥文件（600）→ 配置 git 凭据 → 克隆仓库 → 启用 ufw → 安装并启用 systemd 定时器。
 
+**启用 ufw 后第一件事**：确认你的 SSH 端口被放行了。脚本会从
+`$SSH_CONNECTION`、`sshd_config`、`ssh.socket`、`ss` 四处探测并全部放行，
+但仍要用一条命令复核 —— 锁在门外的代价比多开一个端口大得多：
+
+```bash
+ufw status numbered
+ufw allow <你的SSH端口>/tcp    # 例如 10197
+```
+
 ### 需要准备的三个凭据
 
 | 变量 | 从哪来 | 权限要求 |
