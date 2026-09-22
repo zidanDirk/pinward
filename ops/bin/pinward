@@ -97,7 +97,7 @@ cmd_research() {
     warn "第 $attempt 次生成失败"
     if [ "$attempt" = "2" ]; then
       notify_failure "pinward 研究失败 $RUN_DATE" "模型输出无法解析为 JSON，详见服务器 $RUN_DIR"
-      die "建议生成失败（已重试 1 次，见 $RUN_DIR）"
+      die "建议生成失败（已重试 1 次，见 ${RUN_DIR}）"
     fi
   done
 
@@ -114,7 +114,7 @@ cmd_research() {
 
   log "步骤 4/4：创建 issue：$full_title"
   if [ "$DRY_RUN" = "1" ]; then
-    log "[dry-run] 将创建 issue：$full_title，正文 $RUN_DIR/issue-body.md"
+    log "[dry-run] 将创建 issue：${full_title}，正文 $RUN_DIR/issue-body.md"
     jq -r '.body_markdown' "$payload" > "$RUN_DIR/issue-body.md"
     echo "DRY-RUN OK: $full_title"
     return 0
@@ -139,7 +139,7 @@ cmd_research() {
   } > "$RUN_DIR/issue-body.md"
 
   local url
-  url="$(ghq issue create -R "$GITHUB_REPO" \
+  url="$(ghq_mutate issue create -R "$GITHUB_REPO" \
     --title "$full_title" \
     --body-file "$RUN_DIR/issue-body.md" \
     --label "$LABEL_PENDING")"
@@ -156,7 +156,7 @@ split_one() { # <issue-json>
   title="$(jq -r '.title' <<<"$issue")"
   body="$(jq -r '.body' <<<"$issue")"
 
-  log "拆分 issue #$number：$title"
+  log "拆分 issue #${number}：$title"
   prompt="$RUN_DIR/split-$number-prompt.md"
   {
     cat "$OPS_DIR/prompts/split.md"
@@ -191,7 +191,7 @@ split_one() { # <issue-json>
   log "#$number 拆出 $count 个子任务"
 
   if [ "$DRY_RUN" = "1" ]; then
-    log "[dry-run] 将创建 $count 个子 issue（见 $payload）"
+    log "[dry-run] 将创建 $count 个子 issue（见 ${payload}）"
     jq -r '.[] | "- \(.title)"' "$payload" >&2
     return 0
   fi
@@ -210,7 +210,7 @@ split_one() { # <issue-json>
       printf '\n<!-- pinward-parent:%s -->\n' "$number"
     } > "$RUN_DIR/split-$number-child-$i-full.md"
 
-    child_url="$(ghq issue create -R "$GITHUB_REPO" \
+    child_url="$(ghq_mutate issue create -R "$GITHUB_REPO" \
       --title "$(jq -r ".[$i].title" "$payload")" \
       --body-file "$RUN_DIR/split-$number-child-$i-full.md" \
       --label "$LABEL_APPROVED" --label "$LABEL_CHILD")"
@@ -228,8 +228,8 @@ split_one() { # <issue-json>
     printf '\n子任务均已标记「%s」，将在 10:30 由 MiniMax M3 实现并逐个提交 PR。\n' "$LABEL_APPROVED"
   } > "$RUN_DIR/split-$number-comment.md"
 
-  ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/split-$number-comment.md" >/dev/null
-  ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_SPLIT" >/dev/null
+  ghq_mutate issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/split-$number-comment.md" >/dev/null
+  ghq_mutate issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_SPLIT" >/dev/null
   state_put "$(state_key_issue "$number")" \
     "$(jq -nc --argjson c "$count" --argjson ch "$(printf '%s\n' "${child_numbers[@]}" | jq -R . | jq -sc .)" \
         '{stage:"split", children:$ch, count:$c}')"
@@ -275,13 +275,13 @@ cmd_split() {
       local num
       num="$(jq -r '.number' <<<"$one")"
       if [ "$DRY_RUN" != "1" ]; then
-        ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-        ghq issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「$LABEL_FAILED」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
+        ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+        ghq_mutate issue comment "$num" -R "$GITHUB_REPO" --body "pinward：拆分失败，详见服务器 \`$RUN_DIR\`。已标记「${LABEL_FAILED}」，请人工介入后移除该标签重试。" >/dev/null 2>&1 || true
       fi
     fi
   done
-  notify_failure "pinward 拆分完成 $RUN_DATE" "待拆分 $count，失败 $failed"
-  echo "SPLIT DONE: 共 $count，失败 $failed"
+  notify_failure "pinward 拆分完成 $RUN_DATE" "待拆分 ${count}，失败 $failed"
+  echo "SPLIT DONE: 共 ${count}，失败 $failed"
 }
 
 # ================================================================ 10:30 实现
@@ -330,7 +330,7 @@ implement_one() { # <issue-json>
     local existing_pr=""
     if existing_pr="$(pr_for_issue "$number")"; then
       if [ -n "$existing_pr" ]; then
-        log "#$number 已有 PR #$existing_pr，跳过"
+        log "#$number 已有 PR #${existing_pr}，跳过"
         state_put "$(state_key_issue "$number")" '{"stage":"pr_open"}'
         return 0
       fi
@@ -342,18 +342,21 @@ implement_one() { # <issue-json>
   local parent
   parent="$(parent_of_issue "$issue")"
 
-  log "实现 issue #$number：$title（分支 $branch${parent:+，父 issue #$parent}）"
+  log "实现 issue #${number}：${title}（分支 $branch${parent:+，父 issue #$parent}）"
 
   # 用独立 clone，不用 git worktree。worktree 的 .git 文件指向
   # <APP_DIR>/.git/worktrees/<name>，Claude Code 探测项目根时可能一路解析到主仓库，
   # 于是 agent 把文件写进 APP_DIR 而工作目录保持干净 —— 表现为"提交为空却报成功"。
   # 独立 clone 让这种路径歧义不可能发生。
+  step "#$number 准备实现目录"
   if [ ! -d "$wt/.git" ]; then
     rm -rf "$wt"
+    step "#$number 首次克隆 $GITHUB_REPO"
     git clone --quiet "https://github.com/$GITHUB_REPO.git" "$wt" >/dev/null 2>&1 \
       || die "无法创建实现用克隆：$wt"
   fi
   git -C "$wt" remote set-url origin "https://github.com/$GITHUB_REPO.git"
+  step "#$number 同步分支 $branch"
   git -C "$wt" fetch --prune --quiet origin
   git -C "$wt" checkout -q -f -B "$branch" "origin/$BASE_BRANCH"
   git -C "$wt" reset --hard --quiet "origin/$BASE_BRANCH"
@@ -368,7 +371,7 @@ implement_one() { # <issue-json>
     while IFS= read -r prev; do
       [ -n "$prev" ] || continue
       if ! git -C "$wt" fetch --quiet origin "$prev" 2>/dev/null; then
-        warn "无法获取前置分支 $prev，跳过"
+        warn "无法获取前置分支 ${prev}，跳过"
         continue
       fi
       if git -C "$wt" merge --no-edit --quiet "origin/$prev" >/dev/null 2>&1; then
@@ -396,6 +399,7 @@ implement_one() { # <issue-json>
   envelope="$RUN_DIR/implement-$number-envelope.json"
   local attempt=1 ok=0
   while [ "$attempt" -le 2 ]; do
+    step "#$number 第 $attempt 次调用实现 agent"
     if run_claude m3 "$wt" "$prompt" code "$MAX_TURNS_IMPLEMENT" "$envelope"; then
       # 先从 transcript 核对 agent 把文件写到了哪里：写到工作目录之外是
       # "改动消失"的典型症状，必须显式暴露而不是让它静默变成空提交
@@ -420,6 +424,7 @@ implement_one() { # <issue-json>
         attempt=$((attempt + 1))
         continue
       fi
+      step "#$number 跑 npm check + test"
       if ( cd "$wt" && npm run check >"$RUN_DIR/implement-$number-check.log" 2>&1 && npm test >"$RUN_DIR/implement-$number-test.log" 2>&1 ); then
         ok=1
         break
@@ -447,8 +452,8 @@ implement_one() { # <issue-json>
         tail -n 60 "$RUN_DIR/implement-$number-test.log" 2>/dev/null || true
         printf '\n```\n'
       } > "$RUN_DIR/implement-$number-failcomment.md"
-      ghq issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
-      ghq issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/implement-$number-failcomment.md" >/dev/null 2>&1 || true
+      ghq_mutate issue edit "$number" -R "$GITHUB_REPO" --add-label "$LABEL_FAILED" >/dev/null 2>&1 || true
+      ghq_mutate issue comment "$number" -R "$GITHUB_REPO" --body-file "$RUN_DIR/implement-$number-failcomment.md" >/dev/null 2>&1 || true
     fi
     return 1
   fi
@@ -463,10 +468,11 @@ implement_one() { # <issue-json>
     log "[dry-run] 改动文件："
     sed 's/^/    /' "$RUN_DIR/implement-$number-files.txt" >&2
     log "[dry-run] 保留 worktree 供人工检查：$wt"
-    echo "IMPLEMENT DRY-RUN OK: #$number（worktree 保留在 $wt）"
+    echo "IMPLEMENT DRY-RUN OK: #${number}（worktree 保留在 ${wt}）"
     return 0
   fi
 
+  step "#$number 提交并推送 $branch"
   ( cd "$wt" && git add -A && { git diff --cached --quiet || git commit -q -m "$message"; } )
   default_branch_guard "$branch"
   # 清掉上一次失败留下的同名远端分支，避免 push 被拒
@@ -501,12 +507,12 @@ implement_one() { # <issue-json>
   } > "$RUN_DIR/implement-$number-prbody.md"
 
   local pr_url
-  pr_url="$(ghq pr create -R "$GITHUB_REPO" --draft \
+  pr_url="$(ghq_mutate pr create -R "$GITHUB_REPO" --draft \
     --base "$BASE_BRANCH" --head "$branch" \
     --title "$message" --body-file "$RUN_DIR/implement-$number-prbody.md")"
 
-  ghq issue comment "$number" -R "$GITHUB_REPO" \
-    --body "pinward：已提交 draft PR $pr_url（分支 \`$branch\`），等待人工评审合并。" >/dev/null
+  ghq_mutate issue comment "$number" -R "$GITHUB_REPO" \
+    --body "pinward：已提交 draft PR ${pr_url}（分支 \`$branch\`），等待人工评审合并。" >/dev/null
   state_put "$(state_key_issue "$number")" "$(jq -nc --arg b "$branch" --arg p "$pr_url" --argjson par "${parent:-0}" '{stage:"pr_open",branch:$b,pr:$p,parent:$par}')"
   echo "IMPLEMENT OK: #$number -> $pr_url"
   return 0
@@ -519,6 +525,12 @@ cmd_implement() {
   require_cmd jq node
   git_auth_check
   [ -n "${MINIMAX_API_KEY:-}" ] || die "MINIMAX_API_KEY 未设置"
+
+  # 已经抢到锁，说明没有别的实例在跑；此时还挂着「运行中」标签的都是上次崩掉的。
+  # dry-run 绝不改动远端 —— 本机验证时用的是真仓库，这条护栏必须有。
+  if [ "$DRY_RUN" != "1" ]; then
+    heal_stale_running_labels
+  fi
 
   sync_app
 
@@ -544,15 +556,17 @@ cmd_implement() {
   deadline=$((started + MAX_IMPLEMENT_SECONDS))
 
   for i in $(seq 0 $((count - 1))); do
-    [ "$done_count" -lt "$cap" ] || { log "已达本次上限 $cap，剩余留到下一轮"; break; }
+    [ "$done_count" -lt "$cap" ] || { log "已达本次上限 ${cap}，剩余留到下一轮"; break; }
     now="$(date +%s)"
     [ "$now" -lt "$deadline" ] || { log "已达时间预算，剩余留到下一轮"; break; }
 
     local one num
     one="$(jq -c ".[$i]" <<<"$todo")"
     num="$(jq -r '.number' <<<"$one")"
+    RUNNING_ISSUE="$num"
+    export RUNNING_ISSUE
     if [ "$DRY_RUN" != "1" ]; then
-      ghq issue edit "$num" -R "$GITHUB_REPO" --add-label "AI实现中" >/dev/null 2>&1 || true
+      ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --add-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     fi
     if implement_one "$one"; then
       done_count=$((done_count + 1))
@@ -560,12 +574,14 @@ cmd_implement() {
       failed=$((failed + 1))
     fi
     if [ "$DRY_RUN" != "1" ]; then
-      ghq issue edit "$num" -R "$GITHUB_REPO" --remove-label "AI实现中" >/dev/null 2>&1 || true
+      ghq_mutate issue edit "$num" -R "$GITHUB_REPO" --remove-label "$LABEL_RUNNING" >/dev/null 2>&1 || true
     fi
+    RUNNING_ISSUE=""
+    export RUNNING_ISSUE
   done
 
-  notify_failure "pinward 实现完成 $RUN_DATE" "尝试 $count，成功 $done_count，失败 $failed"
-  echo "IMPLEMENT DONE: 成功 $done_count，失败 $failed"
+  notify_failure "pinward 实现完成 $RUN_DATE" "尝试 ${count}，成功 ${done_count}，失败 $failed"
+  echo "IMPLEMENT DONE: 成功 ${done_count}，失败 $failed"
 }
 
 # ================================================================ 11:30 集成校验
@@ -686,14 +702,14 @@ cmd_doctor() {
     r="$(claude_result "$e" | head -c 60)"
     check "MiniMax M3" "0" "回复：$r"
   else
-    check "MiniMax M3" "1" "调用失败（见 $e）"
+    check "MiniMax M3" "1" "调用失败（见 ${e}）"
   fi
   e="$RUN_DIR/doctor-flash.json"
   if run_claude flash "$SCRATCH_DIR" "$probe" text 2 "$e" >/dev/null 2>&1; then
     r="$(claude_result "$e" | head -c 60)"
     check "DeepSeek flash" "0" "回复：$r"
   else
-    check "DeepSeek flash" "1" "调用失败（见 $e）"
+    check "DeepSeek flash" "1" "调用失败（见 ${e}）"
   fi
 
   echo "[定时器]"
