@@ -23,6 +23,19 @@ import {
   BOSS_PHASES,
 } from "./waves.js";
 
+// 连击窗口（秒）：在窗口内连续击杀可累积连击；超时则断连。
+export const COMBO_WINDOW = 2.0;
+
+// 根据当前连击数返回档位：<=0 → 0；1–4 → 1；5–9 → 2；10–14 → 3；>=15 → 4。
+// 倍率一律按 Math.max(1, tier) 计算，因此档位 0 与 1 都是 ×1，档位 4 即 ×4 封顶。
+export function comboTierFor(count) {
+  if (count <= 0) return 0;
+  if (count <= 4) return 1;
+  if (count <= 9) return 2;
+  if (count <= 14) return 3;
+  return 4;
+}
+
 export class Game {
   constructor({ rng = Math.random, slots = 2, choiceUnlocked = false } = {}) {
     this.rng = rng;
@@ -34,6 +47,11 @@ export class Game {
     this.score = 0;
     this.kills = 0;
     this.hits = 0;
+    // 连击是「当前波」字段：跨波 / 跨 BOSS 阶段会被静默清零，不在 storage 中持久化，
+    // 也不引入整局累计的 maxCombo，避免影响既有战绩结构。
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboTier = 0;
     this.time = 0;
     this.elapsed = 0;
     this.waveTime = 0;
@@ -96,6 +114,10 @@ export class Game {
     this.launchIn = 0;
     this.plan = wavePlan(this.wave, this.rng);
     this.spawned = 0;
+    // 静默清零连击：不发 comboBreak / comboTier，换波后倍率一律从 ×1 重算。
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboTier = 0;
     this.emit("wave", { wave: this.wave });
   }
 
@@ -123,6 +145,10 @@ export class Game {
   }
 
   changeBossStage(stage) {
+    // BOSS 阶段切换：静默清零连击，避免跨阶段延续倍率，也不发任何连击事件。
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboTier = 0;
     this.boss.stage = stage;
     this.boss.attackIn = 4;
     this.boss.warnings = [];
@@ -213,6 +239,9 @@ export class Game {
 
   damage(monster, amount, power = "standard", chain = false) {
     if (monster.hp <= 0) return;
+    // 锁定本次 damage 调用的倍率：本帧命中分与击杀分都用同一个「结算前」倍率，
+    // 后续 registerKill() 的累加不会反过来影响本帧得分。
+    const comboMul = Math.max(1, this.comboTier);
     monster.hp -= amount;
     const previousY = monster.y;
     monster.y = Math.max(24, monster.y - (power === "heavy" ? CELL * 3 : CELL));
@@ -220,7 +249,7 @@ export class Game {
     monster.flash = 0.12;
     if (power === "frost") monster.frozen = 2;
     const multiplier = ["electric", "heavy"].includes(power) ? 1.5 : 1;
-    this.score += 15 * multiplier;
+    this.score += 15 * multiplier * comboMul;
     this.hits++;
     this.emit("hit", {
       x: monster.x,
@@ -249,13 +278,36 @@ export class Game {
     }
     if (monster.hp <= 0) {
       this.kills++;
-      this.score += MONSTERS[monster.type].score * multiplier;
+      this.score += MONSTERS[monster.type].score * multiplier * comboMul;
       this.emit("kill", {
         x: monster.x,
         y: monster.y,
         color: MONSTERS[monster.type].color,
       });
+      this.registerKill();
     }
+  }
+
+  registerKill() {
+    this.comboCount += 1;
+    this.comboTimer = COMBO_WINDOW;
+    const tier = comboTierFor(this.comboCount);
+    if (tier > this.comboTier) {
+      const prevMul = Math.max(1, this.comboTier);
+      this.comboTier = tier;
+      // 仅当倍率真正提升（×2/×3/×4）才发事件；首次拿到 ×1 不发，避免无意义提示。
+      if (tier > prevMul) {
+        this.emit("comboTier", { count: this.comboCount, tier });
+      }
+    }
+  }
+
+  breakCombo() {
+    if (this.comboCount <= 0 && this.comboTier <= 0) return;
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.comboTier = 0;
+    this.emit("comboBreak", {});
   }
 
   damageBoss(amount, power) {
@@ -264,7 +316,6 @@ export class Game {
     boss.hp -= amount;
     boss.flash = 0.12;
     this.hits++;
-    this.score += 35;
     this.emit("hit", {
       x: boss.x,
       y: boss.y,
@@ -274,9 +325,12 @@ export class Game {
     });
     if (boss.hp <= 0) {
       this.score += 3000;
+      this.registerKill();
       this.finish(true);
       return;
     }
+    // BOSS 命中分数保持原值，不乘 comboMul；终局击杀只发 3000 不再叠加命中分。
+    this.score += 35;
     const stage = Math.min(2, Math.floor((1 - boss.hp / boss.maxHp) * 3));
     if (stage > boss.stage) this.changeBossStage(stage);
   }
@@ -366,6 +420,11 @@ export class Game {
     if (this.slowTime > 0) {
       this.slowTime -= dt;
       dt *= 0.35;
+    }
+    // 连击窗口与 time/waveTime 共用 slowTime 缩放后的 dt；暂停 / build / over / reward 已早退。
+    if (this.comboTimer > 0) {
+      this.comboTimer -= dt;
+      if (this.comboTimer <= 0) this.breakCombo();
     }
     this.time += dt;
     this.waveTime += dt;

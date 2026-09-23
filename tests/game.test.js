@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Game } from "../src/game.js";
+import { Game, COMBO_WINDOW, comboTierFor } from "../src/game.js";
 import { createBall, createMonster } from "../src/entities.js";
 import { TYPES, drawCards } from "../src/cards.js";
 import { wavePlan, bossOrder } from "../src/waves.js";
@@ -313,3 +313,256 @@ for (let seed = 1; seed <= 8; seed++)
     assert.equal(stages.size, 3);
     assert.ok(elapsed >= 240 && elapsed <= 360, `Run length ${elapsed}s`);
   });
+
+test("comboTierFor maps thresholds and caps at tier 4", () => {
+  assert.equal(comboTierFor(0), 0);
+  assert.equal(comboTierFor(-3), 0);
+  assert.equal(comboTierFor(1), 1);
+  assert.equal(comboTierFor(4), 1);
+  assert.equal(comboTierFor(5), 2);
+  assert.equal(comboTierFor(9), 2);
+  assert.equal(comboTierFor(10), 3);
+  assert.equal(comboTierFor(14), 3);
+  assert.equal(comboTierFor(15), 4);
+  assert.equal(comboTierFor(16), 4);
+  assert.equal(comboTierFor(99), 4);
+});
+
+test("kills within window accumulate comboCount and reset comboTimer each time", () => {
+  const game = new Game();
+  game.start();
+  // 清空 plan 防止 update() 期间生成额外怪物干扰连击状态断言
+  game.plan = [];
+  const killOne = () => {
+    const m = createMonster(game.nextId++, "normal", 1, 4);
+    m.hp = 1;
+    game.monsters = [m];
+    game.damage(m, 1, "standard");
+  };
+  killOne();
+  assert.equal(game.comboCount, 1);
+  assert.equal(game.comboTier, 1);
+  assert.equal(game.comboTimer, COMBO_WINDOW);
+  // 1.5 秒后仍未超时：定时器递减但 comboCount 不变
+  game.monsters = [];
+  game.plan = [];
+  advance(game, 1.5);
+  assert.equal(game.comboCount, 1);
+  assert.ok(game.comboTimer < COMBO_WINDOW);
+  assert.ok(game.comboTimer > COMBO_WINDOW - 1.6);
+  // 窗口内再击杀一次：计数 +1、定时器重置回 COMBO_WINDOW
+  killOne();
+  assert.equal(game.comboCount, 2);
+  assert.equal(game.comboTier, 1);
+  assert.equal(game.comboTimer, COMBO_WINDOW);
+});
+
+test("combo times out after COMBO_WINDOW seconds and emits comboBreak exactly once", () => {
+  const game = new Game();
+  game.start();
+  game.plan = [];
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1, "standard");
+  game.events = [];
+  game.monsters = [];
+  game.plan = [];
+  advance(game, COMBO_WINDOW + 0.1);
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTier, 0);
+  assert.equal(game.comboTimer, 0);
+  assert.equal(
+    game.events.filter((e) => e.type === "comboBreak").length,
+    1,
+  );
+  // 后续帧不得重复发 comboBreak
+  advance(game, 1);
+  assert.equal(game.events.filter((e) => e.type === "comboBreak").length, 1);
+});
+
+test("breakCombo is silent when combo is already zero", () => {
+  const game = new Game();
+  game.events = [];
+  game.breakCombo();
+  assert.equal(
+    game.events.filter((e) => e.type === "comboBreak").length,
+    0,
+  );
+  // 即使 update() 推进多帧，没有击杀也不会触发 comboBreak
+  game.start();
+  game.plan = [];
+  advance(game, 5);
+  assert.equal(
+    game.events.filter((e) => e.type === "comboBreak").length,
+    0,
+  );
+});
+
+test("non-killing hit does not advance comboCount or refresh comboTimer", () => {
+  const game = new Game();
+  const tank = createMonster(game.nextId++, "tank", 12, 4);
+  game.monsters = [tank];
+  game.damage(tank, 1, "standard");
+  assert.ok(tank.hp > 0);
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTier, 0);
+  assert.equal(game.comboTimer, 0);
+});
+
+test("combo multiplier multiplies hit and kill score using the pre-kill snapshot", () => {
+  const game = new Game();
+  // 提前把 tier 拉到 2（×2），但不触发击杀累加，保证本帧倍率快照唯一。
+  game.comboCount = 5;
+  game.comboTier = comboTierFor(5);
+  const before = game.score;
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  // electric ×1.5 叠加 combo ×2：命中 15*1.5*2 = 45，击杀 MONSTERS.normal.score*1.5*2 = 100*1.5*2 = 300
+  game.damage(m, 1, "electric");
+  assert.equal(game.score - before, 45 + 300);
+  assert.equal(game.comboCount, 6);
+  assert.equal(game.comboTier, 2);
+});
+
+test("boss hit and finish scores ignore combo multiplier", () => {
+  const game = new Game();
+  game.beginBoss();
+  game.comboCount = 5;
+  game.comboTier = 4;
+  const before = game.score;
+  game.damageBoss(10, "electric");
+  assert.equal(game.score - before, 35);
+  game.damageBoss(999, "standard");
+  assert.equal(game.score - before, 35 + 3000);
+  assert.equal(game.phase, "over");
+  // 终局击杀仍触发一次 registerKill
+  assert.equal(game.comboCount, 6);
+});
+
+test("beginWave and changeBossStage silently reset combo fields without events", () => {
+  const game = new Game({ rng: seededRandom(3) });
+  // 直接喂一个低血量怪物制造一次击杀拉起连击
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1, "standard");
+  assert.equal(game.comboCount, 1);
+  game.events = [];
+  game.beginWave();
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTimer, 0);
+  assert.equal(game.comboTier, 0);
+  assert.equal(
+    game.events.some((e) => e.type === "comboBreak" || e.type === "comboTier"),
+    false,
+  );
+  // chooseCard 触发的下一波也走 beginWave，同样静默
+  game.comboCount = 3;
+  game.comboTier = 1;
+  game.comboTimer = 1;
+  game.events = [];
+  game.beginWave();
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTier, 0);
+  assert.equal(game.comboTimer, 0);
+  assert.equal(
+    game.events.some((e) => e.type === "comboBreak" || e.type === "comboTier"),
+    false,
+  );
+  // BOSS 阶段切换同样静默清零
+  game.beginBoss();
+  game.comboCount = 7;
+  game.comboTier = 2;
+  game.comboTimer = 1.5;
+  game.events = [];
+  game.changeBossStage(1);
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTier, 0);
+  assert.equal(game.comboTimer, 0);
+  assert.equal(
+    game.events.some((e) => e.type === "comboBreak" || e.type === "comboTier"),
+    false,
+  );
+});
+
+test("electric chain registers combo for each kill in the same frame", () => {
+  const game = new Game();
+  const a = createMonster(game.nextId++, "normal", 1, 4);
+  const b = createMonster(game.nextId++, "normal", 1, 5);
+  a.y = 500;
+  b.y = 500;
+  a.hp = 1;
+  b.hp = 1;
+  game.monsters = [a, b];
+  // amount=2 使连锁衰减后仍 ≥1，确保 hp=1 的相邻怪也死于同帧
+  game.damage(a, 2, "electric");
+  assert.equal(game.comboCount, 2);
+  assert.equal(game.comboTier, 1);
+});
+
+test("comboTier event fires only on tier promotion past ×1", () => {
+  const game = new Game();
+  const killOne = () => {
+    const m = createMonster(game.nextId++, "normal", 1, 4);
+    m.hp = 1;
+    game.monsters = [m];
+    game.damage(m, 1, "standard");
+  };
+  game.events = [];
+  for (let i = 0; i < 5; i++) killOne();
+  const tiers = game.events.filter((e) => e.type === "comboTier");
+  // 前 4 杀停在 ×1，第 5 杀触发 ×2
+  assert.equal(tiers.length, 1);
+  assert.equal(tiers[0].tier, 2);
+  assert.equal(tiers[0].count, 5);
+});
+
+test("comboTier caps at 4 and emits only on 5/10/15 promotions", () => {
+  const game = new Game();
+  const killOne = () => {
+    const m = createMonster(game.nextId++, "normal", 1, 4);
+    m.hp = 1;
+    game.monsters = [m];
+    game.damage(m, 1, "standard");
+  };
+  game.events = [];
+  for (let i = 0; i < 16; i++) killOne();
+  assert.equal(game.comboCount, 16);
+  assert.equal(game.comboTier, 4);
+  const tiers = game.events.filter((e) => e.type === "comboTier");
+  assert.equal(tiers.length, 3);
+  assert.deepEqual(
+    tiers.map((e) => [e.count, e.tier]),
+    [
+      [5, 2],
+      [10, 3],
+      [15, 4],
+    ],
+  );
+});
+
+test("combo timer freezes while paused and resumes afterwards", () => {
+  const game = new Game();
+  game.start();
+  game.plan = [];
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1, "standard");
+  assert.equal(game.comboCount, 1);
+  game.paused = true;
+  game.monsters = [];
+  advance(game, 5);
+  // 暂停期间 combo 冻结
+  assert.equal(game.comboCount, 1);
+  assert.equal(game.comboTimer, COMBO_WINDOW);
+  game.paused = false;
+  advance(game, COMBO_WINDOW + 0.1);
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTimer, 0);
+  assert.ok(
+    game.events.some((e) => e.type === "comboBreak"),
+  );
+});
