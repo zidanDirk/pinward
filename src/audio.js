@@ -80,6 +80,10 @@ export class ArcadeAudio {
         0.08,
         event.won ? 1320 : 45,
       );
+    else if (event.type === "comboTier")
+      this.tone(880, 0.18, "triangle", 0.05, 1320);
+    else if (event.type === "comboBreak")
+      this.tone(220, 0.25, "sawtooth", 0.04, 60);
   }
   update(dt, stage) {
     if (stage == null) {
