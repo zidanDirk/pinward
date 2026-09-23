@@ -150,6 +150,22 @@ function updateUI(force = false) {
       `scaleX(${Math.max(0, game.rewardLeft / 6)})`;
     $("reward-resume").hidden = !game.paused;
   }
+  // 连击徽章仅在 10Hz 的 updateUI 中刷新，避免 60Hz 主循环产生每帧分配。
+  const comboCount = Math.max(0, game.comboCount | 0);
+  const comboTier = Math.max(0, game.comboTier | 0);
+  const comboMultiplier = Math.max(1, comboTier);
+  $("combo-text").textContent = `×${comboCount} · ${comboMultiplier}×`;
+  const comboBadge = $("combo-badge");
+  const inactive = comboCount <= 0;
+  comboBadge.classList.toggle("inactive", inactive);
+  comboBadge.setAttribute(
+    "aria-label",
+    inactive
+      ? "当前没有连击"
+      : `连击 ${comboCount} 次，得分倍率 ${comboMultiplier} 倍`,
+  );
+  $("combo-progress").style.transform =
+    `scaleX(${inactive ? 0 : Math.max(0, game.comboTimer / 2)})`;
   if (force || lastPhase !== game.phase) {
     if (game.phase === "reward") showRewards();
     else if ($("reward-dialog").open) $("reward-dialog").close();
@@ -569,6 +585,8 @@ function processEvents() {
       bannerTime = 3;
     }
     if (event.type === "leak") toast(`基地受到冲击，剩余 ${game.hp} 点血量。`);
+    if (event.type === "comboTier") toast(`连击 ×${event.tier}`);
+    if (event.type === "comboBreak") toast("连击中断");
   }
 }
 
