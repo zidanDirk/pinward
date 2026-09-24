@@ -1,9 +1,13 @@
-const CACHE = "pinward-v1";
+const CACHE = "pinward-3d-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./style.css",
   "./src/main.js",
+  "./src/bootstrap.js",
+  "./src/board-view.js",
+  "./vendor/three/three.module.js",
+  "./vendor/three/three.core.js",
   "./src/game.js",
   "./src/renderer.js",
   "./src/physics.js",

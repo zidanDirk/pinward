@@ -8,7 +8,9 @@ await mkdir("test-results", { recursive: true });
 const browser = await chromium.launch({
   headless: true,
   channel: "chrome",
-  args: ["--disable-gpu"],
+  args: process.env.SOFTWARE_WEBGL
+    ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+    : [],
 });
 try {
   const context = await browser.newContext({
@@ -28,6 +30,29 @@ try {
   });
   await page.waitForFunction(() => window.__qaGame);
   await page.locator("#start").click();
+  // 用真实击杀事件检查合并后的倍率 UI，暂停时连击倒计时也应冻结。
+  await page.evaluate(async () => {
+    const g = window.__qaGame;
+    const { createMonster } = await import("./src/entities.js");
+    for (let i = 0; i < 5; i++)
+      g.damage(createMonster(9000 + i, "normal", 1, i), 999);
+    g.paused = true;
+  });
+  await page.waitForTimeout(250);
+  assert.equal(await page.locator("#combo-count").innerText(), "5");
+  assert.match(await page.locator("#combo-text").innerText(), /2× 得分/);
+  const comboTimer = await page.evaluate(() => window.__qaGame.comboTimer);
+  await page.waitForTimeout(150);
+  assert.equal(
+    await page.evaluate(() => window.__qaGame.comboTimer),
+    comboTimer,
+  );
+  await page.evaluate(() => {
+    window.__qaGame.breakCombo();
+    window.__qaGame.paused = false;
+  });
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator("#combo-badge").isVisible(), false);
   await page.evaluate(async () => {
     const g = window.__qaGame;
     const types = ["electric", "frost", "heavy", "split", "wide", "standard"];
@@ -170,7 +195,9 @@ try {
   const performanceResult = {
     browser: await browser.version(),
     viewport: "1440×1000",
-    mode: "headless Chrome, software rendering",
+    mode: process.env.SOFTWARE_WEBGL
+      ? "headless Chrome, SwiftShader WebGL"
+      : "headless Chrome, native GPU WebGL",
     sampleSeconds: after.Timestamp - before.Timestamp,
     fps,
     mainThreadBusyPercent:

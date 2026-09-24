@@ -29,6 +29,7 @@ jobs:
 
       - name: Validate game
         run: |
+          npm ci
           npm run check
           npm test
 
@@ -36,10 +37,12 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/site"
           cp index.html style.css sw.js manifest.webmanifest "$RUNNER_TEMP/site/"
-          cp -R src icons "$RUNNER_TEMP/site/"
+          cp -R src icons vendor "$RUNNER_TEMP/site/"
           test -f "$RUNNER_TEMP/site/index.html"
           test -f "$RUNNER_TEMP/site/src/main.js"
           test -f "$RUNNER_TEMP/site/icons/icon.svg"
+          test -f "$RUNNER_TEMP/site/vendor/three/three.module.js"
+          test -f "$RUNNER_TEMP/site/vendor/three/three.core.js"
 
       - name: Setup Qshell
         if: github.event_name == 'push'

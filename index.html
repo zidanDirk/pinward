@@ -6,35 +6,36 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#163d40" />
+    <meta name="theme-color" content="#5355ef" />
     <meta
       name="description"
-      content="弹珠防线 Pinward：放置反弹器，让弹球守住防线。12 波怪物、三阶段章鱼 BOSS，一局五分钟的弹球策略游戏。"
+      content="弹珠防线 3D：把反弹器摆上桌，让弹球打出漂亮连击。12 波挑战、三阶段 BOSS，一局五分钟。"
     />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./style.css" />
-    <title>PINWARD · 弹珠防线</title>
+    <script type="importmap">
+      { "imports": { "three": "./vendor/three/three.module.js" } }
+    </script>
+    <title>PINWARD 3D · 弹就完事了</title>
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="./" aria-label="Pinward 首页"
-        ><svg viewBox="0 0 36 36" aria-hidden="true">
-          <path d="M7 29 20 16M17 29l12-12" />
-          <circle cx="11" cy="10" r="5" /></svg
-        ><span>PINWARD<span class="brand-dot">®</span></span></a
+      <a class="brand" href="./" aria-label="pinward3D 首页"
+        ><span class="brand-icon" aria-hidden="true">↗<i></i></span
+        ><span>pinward<span class="brand-badge">3D</span></span></a
       >
       <div class="header-note">
-        弹球 × 构筑 × 塔防<span>一颗弹球，无数种可能。</span>
+        <span class="live-dot"></span> 小球上场，烦恼退场。
       </div>
       <div class="header-actions">
         <span class="stars">✦ <b id="stars">0</b><span> 星币</span></span
         ><button
           class="icon-button"
           id="sound"
-          aria-label="开启声音"
-          aria-pressed="false"
+          aria-label="关闭声音"
+          aria-pressed="true"
           title="声音"
         >
           ♪</button
@@ -48,102 +49,104 @@
         </button>
       </div>
     </header>
-
     <main class="game-layout">
       <aside class="mission-panel">
         <div class="eyebrow">
-          <span class="status-dot"></span> CHAPTER 01 / 潮汐来袭
+          <span class="chapter-pill">CH. 01</span> 潮汐来袭
         </div>
-        <h1>弹珠防线<span>让环境，成为武器。</span></h1>
-        <p class="intro">
-          布下反弹器，串起你的弹道。<br />把每一只怪物，送回潮水里。
-        </p>
+        <h1>
+          弹就<br /><em>完事了。</em
+          ><span class="title-spark" aria-hidden="true">✳</span>
+        </h1>
+        <p class="intro">摆好你的神级弹道。<br />剩下的，让小球来！</p>
+        <div id="start-overlay" class="start-overlay">
+          <div id="start-choice" hidden>
+            <label for="initial-type">开局搭配</label
+            ><select id="initial-type">
+              <option value="standard">双标准 · 稳定弹道</option>
+              <option value="frost">冰冻 + 标准 · 减速拦截</option>
+            </select>
+          </div>
+          <button id="start" class="primary-button" disabled>
+            开始防守 <span>↗</span>
+          </button>
+          <span class="start-footnote">12 波 + BOSS · 约 5 分钟</span>
+        </div>
         <section class="telemetry" aria-label="战况">
           <div class="stat-line">
-            <span>当前波次</span
+            <span>你的挑战</span
             ><span class="micro" id="phase-label">准备布阵</span>
           </div>
-          <div
-            class="combo-badge inactive"
-            id="combo-badge"
-            aria-label="连击 0 次，得分倍率 1 倍"
-          >
-            <span class="combo-text" id="combo-text" aria-hidden="true"
-              >×0 · 1×</span
-            ><span class="combo-track" aria-hidden="true"
-              ><i id="combo-progress"></i></span
-            >
-          </div>
           <div class="wave-number">
-            <b id="wave">01</b><span>/ 12</span
-            ><svg viewBox="0 0 48 32" aria-hidden="true">
-              <path d="m2 25 13-13 10 10L45 2M31 2h14v14" />
-            </svg>
+            <b id="wave">01</b><span>/ 12 波</span
+            ><span class="wave-icon" aria-hidden="true">⚑</span>
           </div>
           <div id="wave-dots" class="wave-dots" aria-hidden="true"></div>
           <div class="stat-line hp-label">
-            <span>基地完整度</span><b id="hp">10 / 10</b>
+            <span>基地能量</span><b id="hp">10 / 10</b>
           </div>
           <div id="hp-pips" class="hp-pips" aria-hidden="true"></div>
           <div class="score-row">
             <div><span>本局得分</span><strong id="score">000000</strong></div>
-            <span class="score-mark">↗</span>
+            <span class="score-mark" aria-hidden="true">✧</span>
           </div>
-          <div class="best-line"><span>个人最高</span><b id="best">0</b></div>
+          <div class="best-line"><span>个人最佳</span><b id="best">0</b></div>
         </section>
         <div class="mission-bottom">
-          <span class="tiny-label">FIELD NOTES</span>
+          <span class="tiny-label">灵感补给站</span>
           <p id="field-note">
-            先从两块标准反弹器开始。<br />好角度，比数量更重要。
+            点一下反弹器，就能旋转或回收。<br />角度到位，快乐翻倍。
           </p>
-          <button class="text-button" id="upgrades">
-            永久升级 <span>↗</span></button
-          ><button class="text-button" id="records">
-            本地战绩 <span>↗</span>
-          </button>
+          <div class="side-links">
+            <button class="text-button" id="upgrades">永久升级 ↗</button
+            ><button class="text-button" id="records">本地战绩 ↗</button>
+          </div>
         </div>
       </aside>
-
-      <section class="arena-column" aria-label="弹球台">
+      <section class="arena-column" aria-label="3D 弹球台">
         <div class="arena-topline">
-          <span><i></i> <span id="board-status">SYSTEM READY</span></span
-          ><span id="timer">00:00</span>
+          <span class="arena-label"
+            ><span class="live-dot"></span
+            ><span id="board-status">准备开弹</span></span
+          >
+          <div class="view-switch" role="group" aria-label="球台视角">
+            <button data-view="3d" class="active" aria-pressed="true">
+              3D 视角</button
+            ><button data-view="top" aria-pressed="false">俯视布阵</button>
+          </div>
+          <span id="timer">00:00</span>
         </div>
         <div class="cabinet" id="cabinet">
+          <div class="stage-sticker sticker-a" aria-hidden="true">
+            GOOD<br />VIBES ONLY ↗
+          </div>
+          <div class="stage-sticker sticker-b" aria-hidden="true">BOUNCE!</div>
           <canvas
             id="board"
-            width="540"
-            height="840"
+            width="660"
+            height="800"
             tabindex="0"
-            aria-label="9 列 14 行弹球台。方向键移动光标，回车放置，R 旋转，Delete 回收。"
+            aria-label="立体弹球台。方向键移动网格光标，回车放置或选中，R 旋转，Delete 回收。"
           ></canvas>
-          <div class="board-corner tl"></div>
-          <div class="board-corner tr"></div>
-          <div class="board-corner bl"></div>
-          <div class="board-corner br"></div>
-          <div class="start-overlay" id="start-overlay">
-            <span class="start-tag">准备好，迎接第一波。</span>
-            <h2>一球入场。<br />全场反击。</h2>
-            <p>自动发射弹球 · 自由构筑防线</p>
-            <div id="start-choice" hidden>
-              <label for="initial-type">初始配置</label
-              ><select id="initial-type">
-                <option value="standard">双标准 · 稳定弹道</option>
-                <option value="frost">冰冻 + 标准 · 减速拦截</option>
-              </select>
-            </div>
-            <button id="start" class="primary-button">
-              开始防守 <span>↗</span>
+          <div class="render-error" id="render-error" hidden role="alert">
+            <b>球台暂时没能启动</b>
+            <p>请更新浏览器或开启硬件加速后重试。</p>
+            <button class="primary-button" onclick="location.reload()">
+              重新加载 ↻
             </button>
-            <span class="start-footnote">12 波 + BOSS / 约 5 分钟</span>
           </div>
           <div class="pause-overlay" id="pause-overlay" hidden>
-            <span class="eyebrow">TAKE A BREATH</span>
-            <h2>防线已暂停</h2>
-            <p>你的下一次反弹，值得好好想想。</p>
+            <span class="pause-symbol" aria-hidden="true">Ⅱ</span
+            ><span class="eyebrow">TAKE A BREAK</span>
+            <h2>暂停一下，灵感上线。</h2>
+            <p>这局等你，不着急。</p>
             <button class="primary-button" id="resume">
               继续防守 <span>▶</span>
             </button>
+          </div>
+          <div class="boss-hud" id="boss-hud" hidden>
+            <div><b>深潮章鱼</b><span id="boss-stage-label"></span></div>
+            <div class="boss-health-track"><i id="boss-health"></i></div>
           </div>
           <div
             class="boss-banner"
@@ -151,43 +154,71 @@
             hidden
             aria-live="polite"
           ></div>
+          <div
+            class="combo"
+            id="combo-badge"
+            hidden
+            aria-live="off"
+            aria-label="当前没有连击"
+          >
+            <b id="combo-count" aria-hidden="true">0</b
+            ><span id="combo-text" aria-hidden="true">连击 · 1× 得分</span>
+            <span class="combo-track" aria-hidden="true"
+              ><i id="combo-progress"></i
+            ></span>
+          </div>
+          <div
+            class="selection-toolbar"
+            id="selection-toolbar"
+            hidden
+            aria-label="选中反弹器操作"
+          >
+            <span id="selection-name">标准反弹器</span
+            ><button id="rotate-selected">↻ 旋转</button
+            ><button id="remove-selected">回收</button
+            ><button id="clear-selected" aria-label="取消选中">×</button>
+          </div>
           <div class="toast" id="toast" role="status"></div>
         </div>
-        <div class="arena-toolbar">
-          <div>
-            <span class="pulse-dot"></span
-            ><span id="launch-status">发射器待命</span>
+        <div class="play-dock">
+          <div class="arena-toolbar">
+            <div>
+              <span class="pulse-dot"></span
+              ><span id="launch-status">每 4 秒，自动发射一颗快乐</span>
+            </div>
+            <button
+              id="pause"
+              class="pause-button"
+              disabled
+              aria-label="暂停游戏"
+            >
+              Ⅱ <span>暂停</span>
+            </button>
           </div>
-          <button
-            id="pause"
-            class="pause-button"
-            disabled
-            aria-label="暂停游戏"
-          >
-            Ⅱ <span>暂停</span>
-          </button>
+          <div class="aim-controls">
+            <label for="aim">弹道瞄准</label><span aria-hidden="true">↖</span
+            ><input
+              id="aim"
+              type="range"
+              min="-15"
+              max="15"
+              step="1"
+              value="0"
+            /><span aria-hidden="true">↗</span><output id="aim-value">0°</output
+            ><button id="aim-confirm" title="锁定下一球角度（空格）">
+              锁定下一球 <span>␣</span>
+            </button>
+          </div>
         </div>
-        <div class="aim-controls">
-          <label for="aim">发射角度</label
-          ><input
-            id="aim"
-            type="range"
-            min="-15"
-            max="15"
-            step="1"
-            value="0"
-          /><output id="aim-value">0°</output
-          ><button id="aim-confirm" title="锁定下一球角度（空格）">
-            锁定下一球
-          </button>
-        </div>
+        <p class="board-hint" id="board-hint">
+          点击反弹器可编辑 · 切换俯视，更好布阵
+        </p>
       </section>
-
       <aside class="build-panel">
         <div class="build-title">
           <div>
-            <span class="tiny-label">YOUR LOADOUT</span>
-            <h2>反弹器工坊</h2>
+            <span class="tiny-label">BUILD YOUR COMBO</span>
+            <h2>你的反弹小队<span>✦</span></h2>
           </div>
           <span id="bumper-count">02<span> / 18</span></span>
         </div>
@@ -199,30 +230,32 @@
         </div>
         <div id="inventory" class="inventory" aria-label="反弹器库存"></div>
         <div class="selected-detail">
-          <span id="detail-material" class="tiny-label">木质反弹器</span>
-          <p id="detail-text">改变弹道。45° 反射，让每一次碰撞都有价值。</p>
+          <span id="detail-material" class="tiny-label">弹道担当</span>
+          <p id="detail-text">
+            选中反弹器后，点击空格放置。点已有反弹器，可以旋转或回收。
+          </p>
           <span id="detail-effect">命中击退 1 格</span>
         </div>
         <div class="control-note">
-          <span class="tiny-label">A LITTLE STRATEGY</span>
-          <p>选中反弹器后，点击网格放置。<br />波次结束后，选一张新卡牌。</p>
-          <div><kbd>Alt</kbd> 点击旋转 <span>·</span> 右键回收</div>
-          <div><kbd>空格</kbd> 锁定角度 <span>·</span> <kbd>P</kbd> 暂停</div>
-          <p class="touch-note">
-            触屏：长按 0.8 秒旋转；双指长按回收。也可切换上方工具后单击。
-          </p>
+          <span class="tip-icon" aria-hidden="true">☄</span>
+          <div>
+            <span class="tiny-label">小技巧，大连击</span>
+            <p>斜着摆，连着弹。<br />电击 + 分裂，快乐会传染。</p>
+          </div>
+        </div>
+        <div class="shortcut-note">
+          <kbd>1—6</kbd> 选择小队 <kbd>R</kbd> 旋转 <kbd>P</kbd> 暂停
         </div>
       </aside>
     </main>
     <footer class="site-footer">
-      <span>BUILD A PATH. HOLD THE LINE.</span>
+      <span>SMALL BALL. BIG ENERGY.</span>
       <nav aria-label="游戏记录与成长">
         <button id="mobile-upgrades" class="text-button">永久升级 ↗</button
         ><button id="mobile-records" class="text-button">本地战绩 ↗</button>
       </nav>
-      <span>每次反弹，都是一次转机。 <span class="footer-ball">●</span></span>
+      <span>今天也要，漂亮反弹。 ✳</span>
     </footer>
-
     <dialog id="reward-dialog" aria-labelledby="reward-title">
       <div class="modal-top">
         <span class="eyebrow" id="reward-wave">WAVE CLEAR</span
@@ -293,15 +326,16 @@
       </ol>
       <div class="key-guide">
         <p>
-          <kbd>方向键</kbd> 棋盘光标 <kbd>Enter</kbd> 放置 <kbd>R</kbd> 旋转
-          <kbd>Delete</kbd> 回收
+          <kbd>1—6</kbd> 选择反弹器 <kbd>方向键</kbd> 棋盘光标
+          <kbd>Enter</kbd> 放置或选中 <kbd>R</kbd> 旋转 <kbd>Delete</kbd> 回收
         </p>
         <p>
           <kbd>Alt + 点击</kbd> 旋转 <kbd>右键</kbd> 回收
           <kbd>空格</kbd> 锁定角度 <kbd>P</kbd> 暂停
         </p>
         <p>
-          手机可用「旋转 / 回收」工具单击操作，或长按 0.8
+          点击已有反弹器即可打开旋转 /
+          回收面板；切换「俯视布阵」可更清楚地看网格。手机也可以长按 0.8
           秒旋转、双指长按回收。发射角度使用滑块调整。
         </p>
         <p>
@@ -335,6 +369,7 @@
       <div id="record-list"></div>
       <p class="modal-description">战绩仅保存在此浏览器，记录最高的五局。</p>
     </dialog>
-    <script type="module" src="./src/main.js"></script>
+
+    <script type="module" src="./src/bootstrap.js"></script>
   </body>
 </html>

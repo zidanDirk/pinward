@@ -37,7 +37,7 @@ export function createBall(id, angle = 0, x = 270, y = 790, small = false) {
 export const MONSTERS = {
   normal: {
     name: "普通",
-    color: "#afd8bb",
+    color: "#95e5bf",
     radius: 21,
     hp: 2,
     speed: 35,
@@ -45,7 +45,7 @@ export const MONSTERS = {
   },
   swift: {
     name: "迅捷",
-    color: "#efc66c",
+    color: "#ffce77",
     radius: 16,
     hp: 2,
     speed: 46,
@@ -53,7 +53,7 @@ export const MONSTERS = {
   },
   tank: {
     name: "坦克",
-    color: "#b5a7cf",
+    color: "#afa6f4",
     radius: 29,
     hp: 4,
     speed: 29,
@@ -61,7 +61,7 @@ export const MONSTERS = {
   },
   bomb: {
     name: "炸弹",
-    color: "#ef9d88",
+    color: "#ff9fbe",
     radius: 22,
     hp: 3,
     speed: 38,

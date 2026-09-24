@@ -1,105 +1,713 @@
+import * as THREE from "three";
 import { WIDTH, HEIGHT, CELL } from "./physics.js";
 import { TYPES } from "./cards.js";
 import { MONSTERS } from "./entities.js";
 import { BOSS_PHASES } from "./waves.js";
+import { createBoardCamera, fitBoardCamera, pickBoard } from "./board-view.js";
 
-const FONT = "'Avenir Next', 'PingFang SC', sans-serif";
-const MONO = "ui-monospace, monospace";
 const mix = (a, b, t) => (a ?? b) + (b - (a ?? b)) * t;
+const COLORS = {
+  ink: 0x25264f,
+  blue: 0x5260ff,
+  pink: 0xff91ca,
+  lime: 0xdbff82,
+  white: 0xfffdf5,
+};
 
 export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d", { alpha: false });
     this.reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    this.particles = Array.from({ length: 240 }, () => ({ life: 0 }));
-    this.particleIndex = 0;
-    this.effects = [];
-    this.shake = 0;
+    this.mode = "3d";
     this.cursor = null;
+    this.selectedCell = null;
     this.tool = "place";
-    this.background = document.createElement("canvas");
-    this.background.width = WIDTH;
-    this.background.height = HEIGHT;
-    // Pre-render glow once; per-ball shadowBlur is expensive on mobile Canvas.
-    this.glows = Object.fromEntries(
-      Object.entries(TYPES).map(([type, data]) => {
-        const sprite = document.createElement("canvas");
-        sprite.width = sprite.height = 48;
-        const context = sprite.getContext("2d");
-        const gradient = context.createRadialGradient(24, 24, 4, 24, 24, 24);
-        gradient.addColorStop(0, data.color + "b0");
-        gradient.addColorStop(0.4, data.color + "45");
-        gradient.addColorStop(1, data.color + "00");
-        context.fillStyle = gradient;
-        context.fillRect(0, 0, 48, 48);
-        return [type, sprite];
+    this.time = 0;
+    this.shake = 0;
+    this.effects = [];
+    this.particles = Array.from({ length: 180 }, () => ({ life: 0 }));
+    this.particleIndex = 0;
+    this.entities = new Map();
+    this.resources = new Set();
+    this.geometryCache = new Map();
+    this.materialCache = new Map();
+    this.textures = new Map();
+    this.webgl = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
+    this.webgl.setPixelRatio(
+      Math.min(
+        devicePixelRatio || 1,
+        matchMedia("(pointer: coarse)").matches ? 1.5 : 2,
+      ),
+    );
+    this.webgl.setClearColor(0x000000, 0);
+    this.webgl.outputColorSpace = THREE.SRGBColorSpace;
+    this.webgl.toneMapping = THREE.ACESFilmicToneMapping;
+    this.webgl.toneMappingExposure = 1.18;
+    this.webgl.shadowMap.enabled = false;
+    this.webgl.shadowMap.type = THREE.PCFShadowMap;
+    this.scene = new THREE.Scene();
+    this.camera = createBoardCamera();
+    this.world = new THREE.Group();
+    this.scene.add(this.world);
+    this.scene.add(new THREE.HemisphereLight(0xf8f5ff, 0x5e5490, 2.5));
+    const sun = new THREE.DirectionalLight(0xfff2df, 3.5);
+    sun.position.set(-350, 1000, 550);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    Object.assign(sun.shadow.camera, {
+      left: -650,
+      right: 650,
+      top: 650,
+      bottom: -650,
+      near: 10,
+      far: 2500,
+    });
+    sun.shadow.normalBias = 1.5;
+    sun.shadow.bias = -0.0003;
+    this.scene.add(sun);
+    const rim = new THREE.DirectionalLight(0xb0c5ff, 1.7);
+    rim.position.set(500, 500, -600);
+    this.scene.add(rim);
+    this.buildTable();
+    this.makeCursor();
+    this.makeParticlePool();
+    this.makeContactShadows();
+    this.makePreview();
+    this.resize();
+    canvas.dataset.renderer = "three-webgl";
+  }
+
+  geo(key, factory) {
+    if (!this.geometryCache.has(key)) {
+      const geometry = factory();
+      this.geometryCache.set(key, geometry);
+      this.resources.add(geometry);
+    }
+    return this.geometryCache.get(key);
+  }
+  mat(color, basic = false) {
+    const key = `${color}:${basic}`;
+    if (!this.materialCache.has(key)) {
+      const material = basic
+        ? new THREE.MeshBasicMaterial({ color })
+        : new THREE.MeshPhongMaterial({
+            color,
+            shininess: 55,
+            specular: 0x555570,
+          });
+      this.materialCache.set(key, material);
+      this.resources.add(material);
+    }
+    return this.materialCache.get(key);
+  }
+  mesh(geometry, material, parent, x = 0, y = 0, z = 0) {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    parent.add(mesh);
+    return mesh;
+  }
+  box(parent, w, h, d, color, x = 0, y = 0, z = 0, radius = 0) {
+    const geometry = this.geo(`box:${w}:${h}:${d}:${radius}`, () => {
+      if (!radius) return new THREE.BoxGeometry(w, h, d);
+      const s = new THREE.Shape(),
+        a = -w / 2,
+        b = -d / 2,
+        r = radius;
+      s.moveTo(a + r, b);
+      s.lineTo(a + w - r, b);
+      s.quadraticCurveTo(a + w, b, a + w, b + r);
+      s.lineTo(a + w, b + d - r);
+      s.quadraticCurveTo(a + w, b + d, a + w - r, b + d);
+      s.lineTo(a + r, b + d);
+      s.quadraticCurveTo(a, b + d, a, b + d - r);
+      s.lineTo(a, b + r);
+      s.quadraticCurveTo(a, b, a + r, b);
+      const g = new THREE.ExtrudeGeometry(s, {
+        depth: h,
+        bevelEnabled: false,
+        curveSegments: 5,
+      });
+      g.rotateX(-Math.PI / 2);
+      g.translate(0, -h / 2, 0);
+      return g;
+    });
+    return this.mesh(geometry, this.mat(color), parent, x, y, z);
+  }
+  sphere(parent, radius, color, x = 0, y = 0, z = 0) {
+    const m = this.mesh(
+      this.geo("sphere", () => new THREE.SphereGeometry(1, 16, 12)),
+      this.mat(color),
+      parent,
+      x,
+      y,
+      z,
+    );
+    m.scale.setScalar(radius);
+    return m;
+  }
+  cylinder(parent, radius, height, color, x = 0, y = 0, z = 0) {
+    return this.mesh(
+      this.geo(
+        `cylinder:${radius}:${height}`,
+        () => new THREE.CylinderGeometry(radius, radius, height, 20),
+      ),
+      this.mat(color),
+      parent,
+      x,
+      y,
+      z,
+    );
+  }
+  textTexture(text, color = "#fffdf5", width = 512, height = 96) {
+    const key = `${text}:${color}:${width}`;
+    if (!this.textures.has(key)) {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = color;
+      ctx.font = `900 ${height * 0.56}px 'Avenir Next', 'PingFang SC', sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, width / 2, height / 2);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      this.textures.set(key, texture);
+      this.resources.add(texture);
+    }
+    return this.textures.get(key);
+  }
+  floorLabel(text, width, depth, x, z, color = "#fffdf5") {
+    const material = new THREE.MeshBasicMaterial({
+      map: this.textTexture(text, color),
+      transparent: true,
+      depthWrite: false,
+    });
+    this.resources.add(material);
+    const label = this.mesh(
+      this.geo(
+        `plane:${width}:${depth}`,
+        () => new THREE.PlaneGeometry(width, depth),
+      ),
+      material,
+      this.world,
+      x,
+      1.2,
+      z,
+    );
+    label.rotation.x = -Math.PI / 2;
+    label.castShadow = false;
+    return label;
+  }
+
+  buildTable() {
+    const w = this.world;
+    // 潮玩球台：抬高的护栏、圆角外壳、支脚与内嵌台面。
+    this.box(w, 606, 50, 920, 0x4843bb, 0, -32, 0, 38).castShadow = true;
+    this.box(w, 590, 12, 904, 0x7972f2, 0, -8, 0, 33);
+    this.box(w, 544, 4, 844, 0x302e74, 0, -2, 0, 21).receiveShadow = true;
+    for (const x of [-290, 290]) {
+      this.box(w, 17, 32, 847, 0xaaa1ff, x, 13, 0, 8);
+      this.box(w, 7, 6, 816, 0xffa1d5, x, 31, 0, 3);
+      for (const z of [-385, 385])
+        this.cylinder(w, 19, 44, 0x343077, x * 0.85, -75, z);
+    }
+    this.box(w, 559, 30, 18, 0xaaa1ff, 0, 12, -437, 8);
+    this.box(w, 559, 30, 18, 0xaaa1ff, 0, 12, 437, 8);
+    this.box(w, 178, 6, 24, COLORS.lime, 0, 30, 437, 9);
+    const grid = [];
+    for (let x = -270; x <= 270; x += CELL)
+      grid.push(x, 0.7, -300, x, 0.7, 300);
+    for (let z = -300; z <= 300; z += CELL)
+      grid.push(-270, 0.7, z, 270, 0.7, z);
+    const gridGeometry = new THREE.BufferGeometry();
+    gridGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(grid, 3),
+    );
+    const gridMaterial = new THREE.LineBasicMaterial({
+      color: 0x7772c0,
+      transparent: true,
+      opacity: 0.28,
+    });
+    this.resources.add(gridGeometry);
+    this.resources.add(gridMaterial);
+    w.add(new THREE.LineSegments(gridGeometry, gridMaterial));
+    for (let i = 0; i < 9; i++)
+      this.box(w, 24, 3, 5, 0x9b95e8, -240 + i * 60, 2, -320, 2);
+    this.floorLabel("MONSTER DROP ↓", 236, 42, 0, -379, "#c3bbff");
+    this.floorLabel("HOLD. THE. LINE.", 227, 39, 0, 338, "#dfff8a");
+    for (let i = 0; i < 18; i++) {
+      const stripe = this.box(
+        w,
+        17,
+        2,
+        10,
+        i % 2 ? 0x6660a3 : 0xdfff8a,
+        -246 + i * 29,
+        1,
+        305,
+        2,
+      );
+      stripe.rotation.y = -0.35;
+    }
+    this.launcher = new THREE.Group();
+    this.launcher.position.set(0, 0, 375);
+    w.add(this.launcher);
+    this.cylinder(this.launcher, 31, 12, 0x21204e, 0, 7, 0);
+    this.cylinder(this.launcher, 26, 9, COLORS.lime, 0, 16, 0);
+    this.cylinder(this.launcher, 17, 11, 0x5f60d9, 0, 24, 0);
+    this.box(this.launcher, 24, 24, 46, COLORS.lime, 0, 26, -19, 7);
+    this.sphere(this.launcher, 10, COLORS.white, 0, 26, -40);
+    const aimGeometry = new THREE.BufferGeometry();
+    aimGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(new Float32Array(27), 3),
+    );
+    const aimMaterial = new THREE.LineDashedMaterial({
+      color: COLORS.lime,
+      dashSize: 10,
+      gapSize: 9,
+      transparent: true,
+      opacity: 0.75,
+    });
+    this.aimLine = new THREE.Line(aimGeometry, aimMaterial);
+    this.resources.add(aimGeometry);
+    this.resources.add(aimMaterial);
+    w.add(this.aimLine);
+    const shadowCanvas = document.createElement("canvas");
+    shadowCanvas.width = 384;
+    shadowCanvas.height = 512;
+    const shadowContext = shadowCanvas.getContext("2d");
+    shadowContext.shadowColor = "#30265e";
+    shadowContext.shadowBlur = 28;
+    shadowContext.fillStyle = "#30265e";
+    shadowContext.fillRect(45, 40, 294, 432);
+    const shadowTexture = new THREE.CanvasTexture(shadowCanvas);
+    const shadow = new THREE.Mesh(
+      new THREE.PlaneGeometry(745, 1060),
+      new THREE.MeshBasicMaterial({
+        map: shadowTexture,
+        transparent: true,
+        opacity: 0.13,
+        depthWrite: false,
       }),
     );
-    this.drawBackground();
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.set(22, -98, 20);
+    this.resources.add(shadowTexture);
+    this.resources.add(shadow.geometry);
+    this.resources.add(shadow.material);
+    this.scene.add(shadow);
+  }
+
+  makeCursor() {
+    const geometry = this.geo("cursor", () => new THREE.BoxGeometry(57, 2, 57));
+    this.cursorMaterial = new THREE.MeshBasicMaterial({
+      color: COLORS.lime,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+    });
+    this.resources.add(this.cursorMaterial);
+    this.cursorMesh = this.mesh(
+      geometry,
+      this.cursorMaterial,
+      this.world,
+      0,
+      3,
+      0,
+    );
+    this.cursorMesh.castShadow = false;
+    const edgeGeometry = new THREE.EdgesGeometry(geometry);
+    this.resources.add(edgeGeometry);
+    const material = new THREE.LineBasicMaterial({ color: COLORS.lime });
+    this.resources.add(material);
+    this.cursorMesh.add(new THREE.LineSegments(edgeGeometry, material));
+    this.cursorMesh.visible = false;
+    this.selection = new THREE.Mesh(
+      this.geo("selection", () => new THREE.TorusGeometry(28, 1.8, 6, 36)),
+      this.mat(COLORS.white, true),
+    );
+    this.selection.rotation.x = -Math.PI / 2;
+    this.selection.position.y = 3;
+    this.selection.visible = false;
+    this.world.add(this.selection);
+    this.ghost = null;
+  }
+
+  makeBumper(b) {
+    const group = new THREE.Group(),
+      length = TYPES[b.type].length;
+    const bodyMaterial = new THREE.MeshPhongMaterial({
+      color: TYPES[b.type].color,
+      shininess: b.type === "frost" ? 100 : 55,
+      specular: 0x555570,
+      emissive: TYPES[b.type].color,
+      emissiveIntensity: 0,
+    });
+    const geometry = this.geo(
+      `capsule:${length}`,
+      () => new THREE.CapsuleGeometry(9, length - 18, 4, 10),
+    );
+    const body = this.mesh(geometry, bodyMaterial, group, 0, 17, 0);
+    body.rotation.z = Math.PI / 2;
+    body.castShadow = true;
+    for (const x of [-length / 2 + 9, length / 2 - 9]) {
+      this.cylinder(group, 10, 12, 0x181c43, x, 6, 0);
+      this.cylinder(group, 4, 3, COLORS.white, x, 26, 0);
+    }
+    if (b.type === "electric") {
+      for (const x of [-20, 0, 20]) {
+        const band = this.mesh(
+          this.geo(
+            "electric-band",
+            () => new THREE.TorusGeometry(10, 1.5, 6, 12),
+          ),
+          this.mat(0xfffc9b, true),
+          group,
+          x,
+          17,
+          0,
+        );
+        band.rotation.y = Math.PI / 2;
+      }
+    } else if (b.type === "frost") {
+      for (const x of [-20, 0, 20]) {
+        const gem = this.mesh(
+          this.geo("crystal", () => new THREE.OctahedronGeometry(7)),
+          this.mat(0xd6fbff),
+          group,
+          x,
+          27,
+          0,
+        );
+        gem.scale.set(0.7, 1.3, 0.7);
+      }
+    } else if (b.type === "heavy") {
+      for (const x of [-22, 22])
+        this.box(group, 8, 25, 24, 0x443583, x, 14, 0, 3);
+    } else if (b.type === "split") {
+      this.mesh(
+        this.geo("prism", () => new THREE.OctahedronGeometry(15)),
+        this.mat(0xffc7ed),
+        group,
+        0,
+        27,
+        0,
+      );
+    }
+    group.userData = {
+      body,
+      material: bodyMaterial,
+      owned: [bodyMaterial],
+      type: b.type,
+    };
+    return group;
+  }
+
+  makeMonster(m) {
+    const group = new THREE.Group(),
+      r = m.radius;
+    const bodyMaterial = new THREE.MeshPhongMaterial({
+      color: MONSTERS[m.type].color,
+      shininess: 45,
+      specular: 0x555570,
+      emissive: 0xffffff,
+      emissiveIntensity: 0,
+    });
+    const body = this.mesh(
+      this.geo("monster-body", () => new THREE.SphereGeometry(1, 14, 10)),
+      bodyMaterial,
+      group,
+      0,
+      r + 2,
+      0,
+    );
+    body.castShadow = true;
+    body.scale.set(r, r * 0.88, r);
+    for (const x of [-0.34, 0.34]) {
+      const eye = this.sphere(
+        group,
+        r * 0.3,
+        COLORS.white,
+        r * x,
+        r * 1.7,
+        r * 0.62,
+      );
+      eye.scale.y *= 1.13;
+      this.sphere(group, r * 0.13, COLORS.ink, r * x, r * 1.83, r * 0.81);
+      const foot = this.sphere(
+        group,
+        r * 0.33,
+        MONSTERS[m.type].color,
+        r * x * 1.5,
+        5,
+        3,
+      );
+      foot.scale.y *= 0.6;
+    }
+    const mouth = this.box(
+      group,
+      r * 0.28,
+      3,
+      3,
+      COLORS.ink,
+      0,
+      r * 0.85,
+      r * 0.95,
+      1,
+    );
+    mouth.rotation.x = 0.25;
+    if (m.type === "swift")
+      for (const sign of [-1, 1]) {
+        const wing = this.mesh(
+          this.geo("wing", () => new THREE.ConeGeometry(10, 23, 3)),
+          this.mat(0xff9fcd),
+          group,
+          r * sign,
+          r,
+          0,
+        );
+        wing.rotation.z = -sign * 1.0;
+      }
+    if (m.type === "tank") {
+      const helmet = this.mesh(
+        this.geo(
+          "helmet",
+          () =>
+            new THREE.SphereGeometry(
+              1,
+              14,
+              8,
+              0,
+              Math.PI * 2,
+              0,
+              Math.PI * 0.48,
+            ),
+        ),
+        this.mat(0x5e63b8),
+        group,
+        0,
+        r * 1.18,
+        0,
+      );
+      helmet.scale.set(r * 1.08, r * 0.94, r * 1.08);
+      this.box(group, 8, 9, r * 1.8, 0x9aa3ff, 0, r * 2.05, -3, 3);
+    }
+    if (m.type === "bomb") {
+      this.cylinder(group, 5, 13, COLORS.ink, 0, r * 2, 0);
+      this.sphere(group, 5, COLORS.lime, 0, r * 2 + 9, 0);
+    }
+    const ice = this.mesh(
+      this.geo(`ice:${r}`, () => new THREE.TorusGeometry(r + 6, 2, 4, 6)),
+      this.mat(0x9cfaff, true),
+      group,
+      0,
+      5,
+      0,
+    );
+    ice.rotation.x = Math.PI / 2;
+    ice.visible = false;
+    const bar = this.box(group, r * 1.6, 3, 4, COLORS.lime, 0, r * 2.55, 0);
+    bar.visible = false;
+    group.userData = {
+      body,
+      material: bodyMaterial,
+      ice,
+      bar,
+      owned: [bodyMaterial],
+    };
+    return group;
+  }
+
+  makeBall(ball) {
+    const group = new THREE.Group();
+    const material = new THREE.MeshPhongMaterial({
+      color: COLORS.white,
+      emissive: TYPES[ball.power].color,
+      emissiveIntensity: 0.65,
+      shininess: 100,
+    });
+    const mesh = this.mesh(
+      this.geo("ball", () => new THREE.SphereGeometry(1, 12, 8)),
+      material,
+      group,
+    );
+    group.userData = { mesh, material, owned: [material] };
+    return group;
+  }
+
+  makeBoss() {
+    const group = new THREE.Group();
+    const material = new THREE.MeshPhongMaterial({
+      color: COLORS.pink,
+      shininess: 70,
+      specular: 0x555570,
+      emissive: 0xffffff,
+    });
+    const head = this.mesh(
+      this.geo("boss-head", () => new THREE.SphereGeometry(1, 22, 16)),
+      material,
+      group,
+      0,
+      83,
+      0,
+    );
+    head.scale.set(67, 67, 59);
+    head.castShadow = true;
+    const tentacles = [];
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI) / 4;
+      const geometry = this.geo(
+        `tentacle:${i}`,
+        () =>
+          new THREE.TubeGeometry(
+            new THREE.CatmullRomCurve3([
+              new THREE.Vector3(28, 42, 0),
+              new THREE.Vector3(58, 16, 0),
+              new THREE.Vector3(87, 10, 9),
+              new THREE.Vector3(99, 27, 19),
+            ]),
+            10,
+            10,
+            7,
+            false,
+          ),
+      );
+      const t = this.mesh(geometry, material, group);
+      t.rotation.y = angle;
+      tentacles.push(t);
+    }
+    for (const sign of [-1, 1]) {
+      this.sphere(group, 19, COLORS.white, sign * 26, 96, 46);
+      this.sphere(group, 9, COLORS.ink, sign * 23, 99, 63);
+      this.box(group, 27, 7, 8, 0x813b97, sign * 27, 117, 55, 3).rotation.z =
+        sign * -0.2;
+    }
+    this.sphere(group, 13, 0x993e8d, 0, 69, 55).scale.set(1, 0.55, 0.3);
+    const crown = this.mesh(
+      this.geo("crown", () => new THREE.ConeGeometry(22, 26, 5, 1, true)),
+      this.mat(COLORS.lime),
+      group,
+      0,
+      152,
+      0,
+    );
+    crown.rotation.z = 0.18;
+    group.userData = { material, tentacles, owned: [material] };
+    return group;
+  }
+
+  makePreview() {
+    this.preview = new THREE.Group();
+    this.world.add(this.preview);
+    [
+      { type: "normal", x: 90, y: 200 },
+      { type: "swift", x: 390, y: 170 },
+      { type: "tank", x: 275, y: 295 },
+      { type: "bomb", x: 460, y: 370 },
+    ].forEach((m, i) => {
+      const model = this.makeMonster({ ...m, radius: MONSTERS[m.type].radius });
+      model.position.set(m.x - 270, 0, m.y - 420);
+      model.userData.index = i;
+      this.preview.add(model);
+    });
+  }
+  makeParticlePool() {
+    const material = new THREE.MeshBasicMaterial();
+    this.resources.add(material);
+    this.particleMesh = new THREE.InstancedMesh(
+      this.geo("particle", () => new THREE.BoxGeometry(1, 1, 1)),
+      material,
+      this.particles.length,
+    );
+    this.particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.particleMesh.frustumCulled = false;
+    this.world.add(this.particleMesh);
+    this.dummy = new THREE.Object3D();
+    this.tempColor = new THREE.Color();
+    const trailMaterial = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+    });
+    this.resources.add(trailMaterial);
+    this.trailMesh = new THREE.InstancedMesh(
+      this.geo("ball", () => new THREE.SphereGeometry(1, 12, 8)),
+      trailMaterial,
+      18 * 6,
+    );
+    this.trailMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.trailMesh.frustumCulled = false;
+    this.world.add(this.trailMesh);
+  }
+  makeContactShadows() {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 64;
+    const context = canvas.getContext("2d"),
+      gradient = context.createRadialGradient(32, 32, 5, 32, 32, 31);
+    gradient.addColorStop(0, "#110c4680");
+    gradient.addColorStop(0.5, "#110c4640");
+    gradient.addColorStop(1, "#110c4600");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 64, 64);
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+    });
+    this.resources.add(texture);
+    this.resources.add(material);
+    const geometry = this.geo("contact-shadow", () => {
+      const g = new THREE.PlaneGeometry(1, 1);
+      g.rotateX(-Math.PI / 2);
+      return g;
+    });
+    this.contactShadows = new THREE.InstancedMesh(geometry, material, 70);
+    this.contactShadows.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.contactShadows.frustumCulled = false;
+    this.world.add(this.contactShadows);
+  }
+  releaseModel(model) {
+    for (const trail of model.userData.trails || []) this.world.remove(trail);
+    for (const material of model.userData.owned || []) material.dispose();
+    this.world.remove(model);
+  }
+  reset() {
+    for (const model of this.entities.values()) this.releaseModel(model);
+    this.entities.clear();
+    this.particles.forEach((p) => (p.life = 0));
+    for (const e of this.effects) this.releaseEffect(e);
+    this.effects = [];
+    this.shake = 0;
+    this.selectedCell = null;
+  }
+  resize() {
+    const rect = this.canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    this.webgl.setSize(rect.width, rect.height, false);
+    fitBoardCamera(this.camera, rect.width / rect.height, this.mode);
+  }
+  setView(mode) {
+    this.mode = mode;
     this.resize();
   }
-
-  resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = this.canvas.clientWidth;
-    this.canvas.width = Math.round(width * dpr);
-    this.canvas.height = Math.round((width / WIDTH) * HEIGHT * dpr);
-  }
-
-  drawBackground() {
-    const c = this.background.getContext("2d");
-    c.fillStyle = "#153d40";
-    c.fillRect(0, 0, WIDTH, HEIGHT);
-    c.fillStyle = "#194347";
-    c.fillRect(12, 64, WIDTH - 24, HEIGHT - 122);
-    c.strokeStyle = "#71998d19";
-    c.lineWidth = 1;
-    for (let x = 0; x <= WIDTH; x += CELL) {
-      c.beginPath();
-      c.moveTo(x, 65);
-      c.lineTo(x, HEIGHT - 62);
-      c.stroke();
-    }
-    for (let y = 120; y < HEIGHT - 60; y += CELL) {
-      c.beginPath();
-      c.moveTo(12, y);
-      c.lineTo(WIDTH - 12, y);
-      c.stroke();
-    }
-    c.fillStyle = "#7da59835";
-    for (let x = 30; x < WIDTH; x += CELL)
-      for (let y = 90; y < HEIGHT - 60; y += CELL) {
-        c.beginPath();
-        c.arc(x, y, 1.2, 0, Math.PI * 2);
-        c.fill();
-      }
-    c.fillStyle = "#a8c8b6";
-    c.font = `10px ${MONO}`;
-    c.textAlign = "center";
-    c.fillText("↓   怪 物 入 口   ↓", WIDTH / 2, 30);
-    c.fillStyle = "#668e85";
-    c.font = `8px ${MONO}`;
-    for (let i = 0; i < 9; i++)
-      c.fillText(String(i + 1).padStart(2, "0"), 30 + i * CELL, 56);
-    c.strokeStyle = "#8db3a343";
-    c.strokeRect(11.5, 64.5, WIDTH - 23, HEIGHT - 124);
-    c.save();
-    c.beginPath();
-    c.rect(12, HEIGHT - 80, WIDTH - 24, 20);
-    c.clip();
-    c.strokeStyle = "#d788664d";
-    c.lineWidth = 6;
-    for (let x = -20; x < WIDTH + 30; x += 20) {
-      c.beginPath();
-      c.moveTo(x, HEIGHT - 58);
-      c.lineTo(x + 20, HEIGHT - 82);
-      c.stroke();
-    }
-    c.restore();
-    c.fillStyle = "#b8c8b6";
-    c.font = `9px ${MONO}`;
-    c.fillText("守 住 这 条 线", WIDTH / 2, HEIGHT - 42);
+  pick(clientX, clientY) {
+    return pickBoard(
+      this.camera,
+      this.canvas.getBoundingClientRect(),
+      clientX,
+      clientY,
+    );
   }
 
   event(e) {
@@ -114,498 +722,367 @@ export class Renderer {
         "disable",
       ].includes(e.type)
     ) {
-      const count = this.reduced ? 2 : e.type === "kill" ? 13 : 6;
+      const count = this.reduced ? 2 : e.type === "kill" ? 13 : 7;
       for (let i = 0; i < count; i++) {
-        const p = this.particles[this.particleIndex++ % this.particles.length];
-        const angle = (i / count) * Math.PI * 2;
+        const p = this.particles[this.particleIndex++ % this.particles.length],
+          a = (i / count) * Math.PI * 2;
         Object.assign(p, {
-          x: e.x,
-          y: e.y,
-          vx: Math.cos(angle) * (70 + i * 9),
-          vy: Math.sin(angle) * (70 + i * 9),
-          life: 0.4,
-          max: 0.4,
-          color: e.color || "#ef9d88",
-          size: e.type === "kill" ? 4 : 2,
+          x: e.x - 270,
+          y: 18,
+          z: e.y - 420,
+          vx: Math.cos(a) * (60 + i * 8),
+          vy: 70 + i * 5,
+          vz: Math.sin(a) * (60 + i * 8),
+          life: 0.45,
+          max: 0.45,
+          color: e.color || "#ff98c4",
+          size: e.type === "kill" ? 6 : 4,
         });
       }
     }
-    if (e.type === "hit") this.effects.push({ ...e, life: 0.65, max: 0.65 });
-    if (e.type === "lightning")
-      this.effects.push({ ...e, life: 0.18, max: 0.18 });
-    if (e.type === "leak") {
-      this.shake = 0.35;
-      this.effects.push({ type: "leak", life: 0.35, max: 0.35 });
+    if (e.type === "hit" && this.effects.length < 32) {
+      const material = new THREE.SpriteMaterial({
+        map: this.textTexture(String(Math.round(e.value)), "#ffffff", 128, 96),
+        color: e.color,
+        depthTest: false,
+      });
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(e.x - 270, 70, e.y - 420);
+      sprite.scale.set(33, 25, 1);
+      this.world.add(sprite);
+      this.effects.push({
+        kind: "number",
+        object: sprite,
+        life: 0.7,
+        max: 0.7,
+      });
     }
-    if (e.type === "bossStage") this.shake = 0.8;
-    if (this.effects.length > 60)
-      this.effects.splice(0, this.effects.length - 60);
+    if (e.type === "lightning" && this.effects.length < 32) {
+      const points = [
+        new THREE.Vector3(e.x - 270, 28, e.y - 420),
+        new THREE.Vector3((e.x + e.tx) / 2 - 259, 43, (e.y + e.ty) / 2 - 430),
+        new THREE.Vector3((e.x + e.tx) / 2 - 281, 22, (e.y + e.ty) / 2 - 410),
+        new THREE.Vector3(e.tx - 270, 28, e.ty - 420),
+      ];
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        new THREE.LineBasicMaterial({ color: 0xeaff8d, transparent: true }),
+      );
+      this.world.add(line);
+      this.effects.push({
+        kind: "lightning",
+        object: line,
+        life: 0.18,
+        max: 0.18,
+      });
+    }
+    if (e.type === "leak") this.shake = 0.35;
+    if (e.type === "bossStage") this.shake = 0.65;
+  }
+  releaseEffect(effect) {
+    this.world.remove(effect.object);
+    effect.object.material.dispose();
+    if (effect.kind === "lightning") effect.object.geometry.dispose();
   }
 
   frame(game, dt, alpha = 1) {
-    const c = this.ctx;
-    c.setTransform(
-      this.canvas.width / WIDTH,
-      0,
-      0,
-      this.canvas.height / HEIGHT,
-      0,
-      0,
-    );
-    c.drawImage(this.background, 0, 0);
-    c.save();
-    if (this.shake > 0 && !this.reduced)
-      c.translate(
-        Math.sin(this.shake * 90) * this.shake * 5,
-        Math.cos(this.shake * 110) * this.shake * 4,
-      );
+    if (this.contextLost) return;
+    this.time += dt;
+    this.world.position.x =
+      !this.reduced && this.shake > 0
+        ? Math.sin(this.shake * 90) * this.shake * 3
+        : 0;
     this.shake = Math.max(0, this.shake - dt);
-    this.drawAim(game);
-    if (game.phase === "build") {
-      [
-        { type: "normal", x: 90, y: 128 },
-        { type: "normal", x: 270, y: 165 },
-        { type: "swift", x: 450, y: 123 },
-        { type: "tank", x: 390, y: 247 },
-      ].forEach((m) =>
-        this.drawMonster(
-          {
-            ...MONSTERS[m.type],
-            ...m,
-            hp: 1,
-            maxHp: 1,
-            rotation: 0,
-            flash: 0,
-            frozen: 0,
-          },
-          game.time,
-        ),
+    this.preview.visible = game.phase === "build";
+    if (this.preview.visible)
+      this.preview.children.forEach((m, i) => {
+        m.position.y = this.reduced ? 0 : Math.sin(this.time * 2 + i) * 4;
+        m.rotation.y = Math.sin(this.time + i) * 0.14;
+      });
+    const alive = new Set();
+    for (const b of game.bumpers) {
+      const key = `bumper:${b.id}:${b.type}`;
+      alive.add(key);
+      if (!this.entities.has(key)) {
+        const model = this.makeBumper(b);
+        this.world.add(model);
+        this.entities.set(key, model);
+      }
+      const model = this.entities.get(key);
+      model.position.set(b.x - 270, 0, b.y - 420);
+      model.rotation.y = -b.angle;
+      model.scale.set(
+        1 + (this.reduced ? 0 : b.flash * 0.7),
+        1,
+        1 - (this.reduced ? 0 : b.flash),
       );
+      model.userData.material.emissiveIntensity = b.flash * 5;
+      model.userData.material.color.set(
+        b.disabled > 0 ? 0x625b88 : TYPES[b.type].color,
+      );
+      model.position.y = b.disabled > 0 ? -5 : 0;
     }
-    for (const b of game.bumpers) this.drawBumper(b, game.time);
-    for (const m of game.monsters)
-      this.drawMonster(
-        { ...m, x: mix(m.px, m.x, alpha), y: mix(m.py, m.y, alpha) },
-        game.time,
+    for (const m of game.monsters) {
+      const key = `monster:${m.id}`;
+      alive.add(key);
+      if (!this.entities.has(key)) {
+        const model = this.makeMonster(m);
+        this.world.add(model);
+        this.entities.set(key, model);
+      }
+      const model = this.entities.get(key);
+      model.visible = m.y >= 0;
+      model.position.set(
+        mix(m.px, m.x, alpha) - 270,
+        this.reduced ? 0 : Math.sin(this.time * 8 + m.id) * 2,
+        mix(m.py, m.y, alpha) - 420,
       );
-    if (game.boss) this.drawBoss(game.boss, game.time);
+      model.rotation.y = this.reduced ? 0 : m.flash * m.rotation;
+      model.userData.material.emissiveIntensity = m.flash * 4;
+      model.userData.ice.visible = m.frozen > 0;
+      model.userData.bar.visible = m.hp < m.maxHp;
+      model.userData.bar.scale.x = Math.max(0.01, m.hp / m.maxHp);
+    }
     for (const ball of game.balls) {
-      const color = TYPES[ball.power].color;
-      if (!this.reduced)
-        for (let i = ball.trail.length - 1; i >= 0; i--) {
-          const p = ball.trail[i];
-          c.globalAlpha = (1 - i / ball.trail.length) * 0.3;
-          c.fillStyle = color;
-          c.beginPath();
-          c.arc(
-            p.x,
-            p.y,
-            ball.radius * (1 - i / ball.trail.length),
-            0,
-            Math.PI * 2,
-          );
-          c.fill();
-        }
-      c.globalAlpha = 1;
-      c.fillStyle = "#fff7df";
-      c.save();
-      c.translate(mix(ball.px, ball.x, alpha), mix(ball.py, ball.y, alpha));
-      if (!this.reduced) c.drawImage(this.glows[ball.power], -24, -24);
-      if (ball.bounceFlash > 0 && !this.reduced) {
-        c.rotate(Math.atan2(ball.vy, ball.vx));
-        const stretch = 1 + ball.bounceFlash * 3;
-        c.scale(stretch, 1 / stretch);
+      const key = `ball:${ball.id}`;
+      alive.add(key);
+      if (!this.entities.has(key)) {
+        const model = this.makeBall(ball);
+        this.world.add(model);
+        this.entities.set(key, model);
       }
-      c.beginPath();
-      c.arc(0, 0, ball.radius, 0, Math.PI * 2);
-      c.fill();
-      c.restore();
-    }
-    this.drawCursor(game);
-    this.drawEffects(dt);
-    c.restore();
-  }
-
-  drawAim(game) {
-    const c = this.ctx,
-      angle = (game.aim * Math.PI) / 180;
-    const x = 270,
-      y = 790;
-    c.save();
-    c.translate(x, y);
-    c.rotate(angle);
-    c.beginPath();
-    c.moveTo(0, -22);
-    c.lineTo(0, -225);
-    c.strokeStyle = game.manualAim ? "#edbc80a0" : "#93b8a44d";
-    c.lineWidth = 1.5;
-    c.setLineDash([5, 9]);
-    c.stroke();
-    c.setLineDash([]);
-    c.fillStyle = "#122e31";
-    c.beginPath();
-    c.arc(0, 0, 28, 0, Math.PI * 2);
-    c.fill();
-    c.fillStyle = "#d58155";
-    c.fillRect(-11, -27, 22, 32);
-    c.fillStyle = "#efbb80";
-    c.fillRect(-7, -25, 14, 6);
-    c.fillStyle = "#b5cfb5";
-    c.beginPath();
-    c.arc(0, 4, 16, 0, Math.PI * 2);
-    c.fill();
-    c.fillStyle = "#28524d";
-    c.beginPath();
-    c.arc(0, 4, 8, 0, Math.PI * 2);
-    c.fill();
-    c.restore();
-    c.beginPath();
-    c.arc(
-      x,
-      y + 4,
-      33,
-      -Math.PI / 2,
-      -Math.PI / 2 + Math.PI * 2 * (1 - Math.max(0, game.launchIn) / 4),
-    );
-    c.strokeStyle = "#db9c68";
-    c.lineWidth = 2;
-    c.stroke();
-    c.font = `8px ${MONO}`;
-    c.fillStyle = "#8aafa1";
-    c.textAlign = "left";
-    c.fillText("AUTO", 25, 811);
-    c.textAlign = "right";
-    c.fillText("04 SEC", 515, 811);
-  }
-
-  drawBumper(b, time) {
-    const c = this.ctx,
-      style = TYPES[b.type];
-    c.save();
-    c.translate(b.x, b.y);
-    if (b.disabled > 0) c.globalAlpha = 0.35;
-    c.strokeStyle = "#a9d1be20";
-    c.lineWidth = 1;
-    c.beginPath();
-    c.arc(0, 0, 24, 0, Math.PI * 2);
-    c.stroke();
-    c.save();
-    c.rotate(b.angle);
-    const stretch =
-      b.flash > 0 && !this.reduced ? 1 + Math.sin(b.flash * 30) * 0.12 : 1;
-    c.scale(stretch, 1 / stretch);
-    c.lineCap = "round";
-    c.lineWidth = 19;
-    c.strokeStyle = "#08262b";
-    c.beginPath();
-    c.moveTo(-b.length / 2, 5);
-    c.lineTo(b.length / 2, 5);
-    c.stroke();
-    c.lineWidth = 14;
-    c.strokeStyle = b.flash > 0 ? "#fff6d6" : style.color;
-    c.beginPath();
-    c.moveTo(-b.length / 2, 0);
-    c.lineTo(b.length / 2, 0);
-    c.stroke();
-    c.lineWidth = 2;
-    c.strokeStyle = "#fff9d766";
-    c.beginPath();
-    c.moveTo(-b.length / 2 + 4, -3);
-    c.lineTo(b.length / 2 - 4, -3);
-    c.stroke();
-    c.fillStyle = "#183e45";
-    for (const x of [-b.length / 2 + 5, b.length / 2 - 5]) {
-      c.beginPath();
-      c.arc(x, 0, 2, 0, Math.PI * 2);
-      c.fill();
-    }
-    if (b.type === "electric") {
-      c.strokeStyle = "#fff5b7";
-      c.lineWidth = 1;
-      c.beginPath();
-      c.moveTo(-20, 0);
-      c.lineTo(-6, -3);
-      c.lineTo(2, 3);
-      c.lineTo(20, -2);
-      c.stroke();
-    }
-    if (b.type === "frost") {
-      c.fillStyle = "#ffffff88";
-      for (const x of [-18, 0, 18]) c.fillRect(x - 2, -6, 4, 12);
-    }
-    if (b.type === "heavy") {
-      c.fillStyle = "#655079";
-      for (const x of [-20, 20]) c.fillRect(x - 3, -7, 6, 14);
-    }
-    if (b.type === "split") {
-      c.fillStyle = "#fbd3d8";
-      c.beginPath();
-      c.moveTo(-7, 0);
-      c.lineTo(0, -11);
-      c.lineTo(7, 0);
-      c.lineTo(0, 11);
-      c.closePath();
-      c.fill();
-    }
-    c.restore();
-    c.globalAlpha = 1;
-    if (b.disabled > 0) {
-      c.fillStyle = "#f2aa91";
-      c.font = `12px ${MONO}`;
-      c.textAlign = "center";
-      c.fillText(Math.ceil(b.disabled) + "s", 0, 30);
-    }
-    c.restore();
-  }
-
-  drawMonster(m, time) {
-    const c = this.ctx,
-      base = MONSTERS[m.type],
-      r = m.radius;
-    c.save();
-    c.translate(m.x, m.y);
-    if (m.flash > 0 && !this.reduced)
-      c.rotate(Math.sin(m.flash * 24) * 0.28 + m.rotation * m.flash);
-    c.fillStyle = "#08282c66";
-    c.beginPath();
-    c.ellipse(0, r * 0.7 + 7, r * 0.85, 8, 0, 0, Math.PI * 2);
-    c.fill();
-    c.fillStyle = m.flash > 0 ? "#fffbe5" : base.color;
-    c.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const a = -Math.PI / 2 + (i * Math.PI) / 5;
-      const x = Math.cos(a) * r,
-        y = Math.sin(a) * r;
-      if (i === 0) c.moveTo(x, y);
-      else c.lineTo(x, y);
-    }
-    c.closePath();
-    c.fill();
-    c.fillStyle = "#ffffff25";
-    c.beginPath();
-    c.moveTo(-r * 0.8, -r * 0.5);
-    c.lineTo(0, -r);
-    c.lineTo(r * 0.8, -r * 0.5);
-    c.lineTo(r * 0.3, 0);
-    c.lineTo(-r * 0.3, 0);
-    c.closePath();
-    c.fill();
-    c.fillStyle = "#173b3d";
-    c.fillRect(-r * 0.47, -3, 5, 7);
-    c.fillRect(r * 0.27, -3, 5, 7);
-    c.strokeStyle = "#173b3d";
-    c.lineWidth = 2;
-    c.beginPath();
-    c.moveTo(-4, 9);
-    c.lineTo(4, 9);
-    c.stroke();
-    if (m.type === "swift") {
-      c.strokeStyle = "#fbe5b0";
-      c.lineWidth = 3;
-      for (const sign of [-1, 1]) {
-        c.beginPath();
-        c.moveTo(sign * r, -5);
-        c.lineTo(sign * (r + 7), -12);
-        c.lineTo(sign * (r + 5), 3);
-        c.stroke();
-      }
-    }
-    if (m.type === "tank") {
-      c.strokeStyle = "#79688f";
-      c.lineWidth = 5;
-      c.beginPath();
-      c.moveTo(-r + 3, 1);
-      c.lineTo(-r + 8, -17);
-      c.lineTo(0, -r + 1);
-      c.lineTo(r - 8, -17);
-      c.lineTo(r - 3, 1);
-      c.stroke();
-    }
-    if (m.type === "bomb") {
-      c.strokeStyle = "#d6b089";
-      c.lineWidth = 3;
-      c.beginPath();
-      c.moveTo(0, -r);
-      c.lineTo(5, -r - 10);
-      c.stroke();
-      c.fillStyle = "#ffe5a0";
-      c.beginPath();
-      c.arc(5, -r - 11, 3 + Math.sin(time * 12), 0, Math.PI * 2);
-      c.fill();
-    }
-    if (m.frozen > 0) {
-      c.strokeStyle = "#b5f3f5";
-      c.lineWidth = 2;
-      for (let i = 0; i < 6; i++) {
-        const a = (i * Math.PI) / 3;
-        const x = Math.cos(a) * (r + 5),
-          y = Math.sin(a) * (r + 5);
-        c.beginPath();
-        c.moveTo(x, y - 4);
-        c.lineTo(x + 4, y);
-        c.lineTo(x, y + 4);
-        c.lineTo(x - 4, y);
-        c.closePath();
-        c.stroke();
-      }
-    }
-    if (m.hp < m.maxHp) {
-      c.fillStyle = "#0f2e30";
-      c.fillRect(-r, -r - 10, r * 2, 3);
-      c.fillStyle = base.color;
-      c.fillRect(-r, -r - 10, r * 2 * Math.max(0, m.hp / m.maxHp), 3);
-    }
-    c.restore();
-  }
-
-  drawBoss(b, time) {
-    const c = this.ctx,
-      phase = BOSS_PHASES[b.order[b.stage]];
-    for (const w of b.warnings) {
-      c.strokeStyle = "#ed947c";
-      c.lineWidth = 2;
-      c.beginPath();
-      c.arc(w.x, w.y, 28 + w.ttl * 10, 0, Math.PI * 2);
-      c.stroke();
-      c.beginPath();
-      c.moveTo(b.x, b.y + 40);
-      c.lineTo(w.x, w.y);
-      c.setLineDash([5, 5]);
-      c.stroke();
-      c.setLineDash([]);
-    }
-    c.save();
-    c.translate(b.x, b.y);
-    c.strokeStyle = b.flash > 0 ? "#fff9dd" : phase.color;
-    c.lineWidth = 15;
-    c.lineCap = "round";
-    for (let i = 0; i < 6; i++) {
-      const x = (i - 2.5) * 22;
-      c.beginPath();
-      c.moveTo(x * 0.8, 30);
-      c.quadraticCurveTo(
-        x * 1.6,
-        100 + Math.sin(time * 3 + i) * 20,
-        x * 1.8,
-        65 + Math.cos(time * 3 + i) * 15,
+      const model = this.entities.get(key),
+        data = model.userData;
+      model.position.set(
+        mix(ball.px, ball.x, alpha) - 270,
+        ball.radius + 5,
+        mix(ball.py, ball.y, alpha) - 420,
       );
-      c.stroke();
-    }
-    c.fillStyle = b.flash > 0 ? "#fff9dd" : phase.color;
-    c.beginPath();
-    c.ellipse(0, 0, 64, 60, 0, 0, Math.PI * 2);
-    c.fill();
-    c.fillStyle = "#ffffff22";
-    c.beginPath();
-    c.moveTo(-48, -35);
-    c.lineTo(0, -60);
-    c.lineTo(50, -33);
-    c.lineTo(20, -7);
-    c.lineTo(-17, -8);
-    c.closePath();
-    c.fill();
-    c.fillStyle = "#173b3d";
-    c.fillRect(-32, -4, 18, 13);
-    c.fillRect(14, -4, 18, 13);
-    c.fillRect(-10, 25, 20, 5);
-    c.fillStyle = "#fff1c7";
-    c.fillRect(-23, 0, 5, 5);
-    c.fillRect(18, 0, 5, 5);
-    c.restore();
-    c.fillStyle = "#102e31e8";
-    c.fillRect(65, 67, 410, 40);
-    c.fillStyle = phase.color;
-    c.font = `10px ${FONT}`;
-    c.textAlign = "left";
-    c.fillText(`深潮章鱼 / 阶段 ${b.stage + 1} · ${phase.name}`, 76, 83);
-    c.fillStyle = "#ffffff22";
-    c.fillRect(76, 91, 388, 5);
-    c.fillStyle = phase.color;
-    c.fillRect(76, 91, 388 * Math.max(0, b.hp / b.maxHp), 5);
-  }
-
-  drawCursor(game) {
-    if (!this.cursor || game.phase === "over") return;
-    const { col, row } = this.cursor;
-    if (row < 2 || row > 11) return;
-    const c = this.ctx,
-      x = col * CELL,
-      y = row * CELL;
-    c.fillStyle = this.tool === "remove" ? "#ee9a8025" : "#fff4cf13";
-    c.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
-    c.strokeStyle = this.tool === "remove" ? "#ef9d88" : "#c3d4b3";
-    c.lineWidth = 1;
-    c.setLineDash([3, 4]);
-    c.strokeRect(x + 3, y + 3, CELL - 6, CELL - 6);
-    c.setLineDash([]);
-    if (
-      this.tool === "place" &&
-      game.inventory[game.selected] > 0 &&
-      !game.bumpers.some((b) => b.col === col && b.row === row)
-    ) {
-      c.globalAlpha = 0.45;
-      this.drawBumper(
-        {
-          x: x + 30,
-          y: y + 30,
-          angle: -Math.PI / 4,
-          type: game.selected,
-          length: TYPES[game.selected].length,
-          disabled: 0,
-          flash: 0,
-        },
-        0,
+      data.mesh.scale.setScalar(
+        ball.radius * (1 + (this.reduced ? 0 : ball.bounceFlash || 0)),
       );
-      c.globalAlpha = 1;
+      data.material.emissive.set(TYPES[ball.power].color);
     }
+    if (game.boss) {
+      alive.add("boss");
+      if (!this.entities.has("boss")) {
+        const model = this.makeBoss();
+        this.world.add(model);
+        this.entities.set("boss", model);
+      }
+      const model = this.entities.get("boss"),
+        b = game.boss;
+      model.position.set(
+        b.x - 270,
+        this.reduced ? 0 : Math.sin(this.time * 2) * 4,
+        b.y - 420,
+      );
+      model.userData.material.color.set(BOSS_PHASES[b.order[b.stage]].color);
+      model.userData.material.emissiveIntensity = b.flash * 4;
+      model.userData.tentacles.forEach((t, i) => {
+        t.rotation.z = this.reduced ? 0 : Math.sin(this.time * 3 + i) * 0.09;
+      });
+    }
+    for (const [key, model] of this.entities)
+      if (!alive.has(key)) {
+        this.releaseModel(model);
+        this.entities.delete(key);
+      }
+    this.updateAim(game);
+    this.updateTrails(game.balls);
+    this.updateContactShadows(game);
+    this.updateCursor(game);
+    this.updateEffects(dt);
+    this.updateWarnings(game);
+    this.webgl.render(this.scene, this.camera);
+    if (this.canvas.dataset.ready !== "true")
+      this.canvas.dataset.ready = "true";
   }
 
-  drawEffects(dt) {
-    const c = this.ctx;
-    for (const p of this.particles)
+  updateAim(game) {
+    this.launcher.rotation.y = (-game.aim * Math.PI) / 180;
+    const array = this.aimLine.geometry.attributes.position.array;
+    const angle = (game.aim * Math.PI) / 180;
+    for (let i = 0; i < 9; i++) {
+      const distance = i * 24;
+      array[i * 3] = Math.sin(angle) * distance;
+      array[i * 3 + 1] = 5;
+      array[i * 3 + 2] = 370 - Math.cos(angle) * distance;
+    }
+    this.aimLine.geometry.attributes.position.needsUpdate = true;
+    this.aimLine.computeLineDistances();
+    this.aimLine.material.opacity = game.manualAim ? 0.95 : 0.4;
+  }
+  updateTrails(balls) {
+    for (let i = 0; i < 18 * 6; i++) {
+      const ball = balls[Math.floor(i / 6)],
+        index = i % 6,
+        point = ball?.trail[index];
+      if (point && !this.reduced) {
+        this.dummy.position.set(point.x - 270, ball.radius + 4, point.y - 420);
+        this.dummy.scale.setScalar(ball.radius * (1 - index / 7) * 0.7);
+        this.tempColor.set(TYPES[ball.power].color);
+      } else {
+        this.dummy.scale.setScalar(0);
+        this.tempColor.set(0xffffff);
+      }
+      this.dummy.rotation.set(0, 0, 0);
+      this.dummy.updateMatrix();
+      this.trailMesh.setMatrixAt(i, this.dummy.matrix);
+      this.trailMesh.setColorAt(i, this.tempColor);
+    }
+    this.trailMesh.instanceMatrix.needsUpdate = true;
+    this.trailMesh.instanceColor.needsUpdate = true;
+  }
+  updateContactShadows(game) {
+    const shadows = [
+      ...game.bumpers.map((b) => ({
+        x: b.x,
+        y: b.y,
+        w: b.length + 15,
+        h: 27,
+        angle: -b.angle,
+      })),
+      ...game.monsters
+        .filter((m) => m.y >= 0)
+        .map((m) => ({ x: m.x, y: m.y, w: m.radius * 2.6, h: m.radius * 2.3 })),
+      ...game.balls.map((b) => ({
+        x: b.x,
+        y: b.y,
+        w: b.radius * 3,
+        h: b.radius * 3,
+      })),
+    ];
+    if (game.phase === "build")
+      for (const m of this.preview.children)
+        shadows.push({
+          x: m.position.x + 270,
+          y: m.position.z + 420,
+          w: 60,
+          h: 55,
+        });
+    if (game.boss)
+      shadows.push({ x: game.boss.x, y: game.boss.y, w: 180, h: 165 });
+    for (let i = 0; i < 70; i++) {
+      const shadow = shadows[i];
+      if (shadow) {
+        this.dummy.position.set(shadow.x - 269, 0.4, shadow.y - 418);
+        this.dummy.scale.set(shadow.w, 1, shadow.h);
+        this.dummy.rotation.set(0, shadow.angle || 0, 0);
+      } else this.dummy.scale.setScalar(0);
+      this.dummy.updateMatrix();
+      this.contactShadows.setMatrixAt(i, this.dummy.matrix);
+    }
+    this.contactShadows.instanceMatrix.needsUpdate = true;
+  }
+  updateCursor(game) {
+    const cell = this.cursor;
+    const editable =
+      !game.paused && ["build", "wave", "boss"].includes(game.phase);
+    this.cursorMesh.visible =
+      !!cell && cell.row >= 2 && cell.row <= 11 && editable;
+    if (this.cursorMesh.visible) {
+      this.cursorMesh.position.set(cell.col * 60 - 240, 3, cell.row * 60 - 390);
+      const occupied = game.bumpers.some(
+        (b) => b.col === cell.col && b.row === cell.row,
+      );
+      const valid =
+        this.tool !== "place" ||
+        (!occupied &&
+          game.inventory[game.selected] > 0 &&
+          game.bumpers.length < 18);
+      this.cursorMaterial.color.set(
+        this.tool === "remove" || !valid ? 0xff90c2 : COLORS.lime,
+      );
+      const showGhost = this.tool === "place" && valid;
+      if (showGhost && this.ghost?.userData.type !== game.selected) {
+        if (this.ghost) this.releaseModel(this.ghost);
+        this.ghost = this.makeBumper({ type: game.selected });
+        this.ghost.traverse((o) => {
+          if (o.isMesh) o.castShadow = false;
+        });
+        this.ghost.userData.material.transparent = true;
+        this.ghost.userData.material.opacity = 0.55;
+        this.world.add(this.ghost);
+      }
+      if (this.ghost) {
+        this.ghost.visible = showGhost;
+        this.ghost.position.set(cell.col * 60 - 240, 5, cell.row * 60 - 390);
+        this.ghost.rotation.y =
+          game.selected === "wide" ? -Math.PI / 3 : Math.PI / 4;
+      }
+    } else if (this.ghost) this.ghost.visible = false;
+    this.selection.visible =
+      !!this.selectedCell &&
+      editable &&
+      game.bumpers.some(
+        (b) =>
+          b.col === this.selectedCell.col && b.row === this.selectedCell.row,
+      );
+    if (this.selection.visible)
+      this.selection.position.set(
+        this.selectedCell.col * 60 - 240,
+        3,
+        this.selectedCell.row * 60 - 390,
+      );
+  }
+  updateWarnings(game) {
+    this.warningRings ??= [];
+    const warnings = game.boss?.warnings || [];
+    while (this.warningRings.length < warnings.length) {
+      const ring = new THREE.Mesh(
+        this.geo("warning", () => new THREE.TorusGeometry(30, 2, 6, 40)),
+        this.mat(0xff7eb2, true),
+      );
+      ring.rotation.x = Math.PI / 2;
+      this.world.add(ring);
+      this.warningRings.push(ring);
+    }
+    this.warningRings.forEach((ring, i) => {
+      ring.visible = !!warnings[i];
+      if (warnings[i]) {
+        const w = warnings[i];
+        ring.position.set(w.x - 270, 5, w.y - 420);
+        ring.scale.setScalar(1 + w.ttl * 0.3);
+      }
+    });
+  }
+  updateEffects(dt) {
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
       if (p.life > 0) {
-        p.life -= dt;
+        p.life = Math.max(0, p.life - dt);
         p.x += p.vx * dt;
         p.y += p.vy * dt;
-        c.globalAlpha = Math.max(0, p.life / p.max);
-        c.fillStyle = p.color;
-        c.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
-      }
+        p.z += p.vz * dt;
+        p.vy -= 220 * dt;
+        this.dummy.position.set(p.x, Math.max(2, p.y), p.z);
+        this.dummy.rotation.set(p.life * 4, p.life * 3, p.life * 5);
+        this.dummy.scale.setScalar((p.size * p.life) / p.max);
+        this.tempColor.set(p.color);
+        this.particleMesh.setColorAt(i, this.tempColor);
+      } else this.dummy.scale.setScalar(0);
+      this.dummy.updateMatrix();
+      this.particleMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    this.particleMesh.instanceMatrix.needsUpdate = true;
+    if (this.particleMesh.instanceColor)
+      this.particleMesh.instanceColor.needsUpdate = true;
     for (const e of this.effects) {
       e.life -= dt;
-      c.globalAlpha = Math.max(0, e.life / e.max);
-      if (e.type === "hit") {
-        c.fillStyle = e.color;
-        c.font = `bold 16px ${MONO}`;
-        c.textAlign = "center";
-        c.fillText(
-          Math.round(e.value),
-          e.x,
-          e.y - 24 - (1 - e.life / e.max) * 32,
-        );
-        if (e.toY != null && !this.reduced) {
-          c.strokeStyle = "#fff9d455";
-          c.lineWidth = 9;
-          c.beginPath();
-          c.moveTo(e.x, e.y);
-          c.lineTo(e.x, e.toY);
-          c.stroke();
-        }
-      } else if (e.type === "lightning") {
-        c.strokeStyle = "#fff2a0";
-        c.lineWidth = 3;
-        c.beginPath();
-        c.moveTo(e.x, e.y);
-        c.lineTo((e.x + e.tx) / 2 + 9, (e.y + e.ty) / 2 - 8);
-        c.lineTo((e.x + e.tx) / 2 - 9, (e.y + e.ty) / 2 + 8);
-        c.lineTo(e.tx, e.ty);
-        c.stroke();
-      } else if (e.type === "leak") {
-        c.fillStyle = "#d86c404d";
-        c.fillRect(0, HEIGHT - 120, WIDTH, 120);
-      }
+      e.object.material.opacity = Math.max(0, e.life / e.max);
+      if (e.kind === "number") e.object.position.y += dt * 45;
+      if (e.life <= 0) this.releaseEffect(e);
     }
     this.effects = this.effects.filter((e) => e.life > 0);
-    c.globalAlpha = 1;
+  }
+  dispose() {
+    this.reset();
+    if (this.ghost) this.releaseModel(this.ghost);
+    this.preview.children.forEach((m) =>
+      m.userData.owned.forEach((r) => r.dispose()),
+    );
+    this.resources.forEach((resource) => resource.dispose());
+    this.webgl.dispose();
   }
 }

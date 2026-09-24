@@ -1,6 +1,10 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
+
+const compress = promisify(gzip);
 
 const root = resolve(import.meta.dirname);
 const types = {
@@ -33,14 +37,28 @@ createServer(async (req, res) => {
     }
     const file = path === root ? resolve(root, "index.html") : path;
     const body = await readFile(file);
+    const acceptsGzip = (req.headers["accept-encoding"] || "")
+      .split(",")
+      .some((entry) => {
+        const [encoding, quality] = entry.trim().split(";");
+        return (
+          encoding === "gzip" &&
+          (!quality || Number(quality.trim().replace("q=", "")) > 0)
+        );
+      });
+    const useGzip =
+      acceptsGzip && body.length > 1024 && extname(file) !== ".png";
+    const output = useGzip ? await compress(body) : body;
     res
       .writeHead(200, {
         "Content-Type":
           (types[extname(file)] || "application/octet-stream") +
           (extname(file) === ".png" ? "" : "; charset=utf-8"),
         "Cache-Control": "no-cache",
+        Vary: "Accept-Encoding",
+        ...(useGzip ? { "Content-Encoding": "gzip" } : {}),
       })
-      .end(body);
+      .end(output);
   } catch {
     res.writeHead(404).end("Not found");
   }

@@ -1,5 +1,4 @@
-// Optional QA tooling only. The shipped game and npm test have zero dependencies.
-// PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node tests/browser.mjs
+// Optional browser QA. Install Playwright separately; the app serves vendored Three.js.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 const { chromium, webkit } = await import(
@@ -8,11 +7,14 @@ const { chromium, webkit } = await import(
 const url = process.env.TEST_URL || "http://localhost:4173";
 await mkdir("test-results", { recursive: true });
 const results = [];
+const launchArgs = process.env.SOFTWARE_WEBGL
+  ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+  : [];
 
 async function checkBrowser(type, name, options = {}) {
   const browser = await type.launch({
     headless: true,
-    ...(type === chromium ? { args: ["--disable-gpu"] } : {}),
+    ...(type === chromium ? { args: launchArgs } : {}),
     ...(name === "Chrome desktop" ? { channel: "chrome" } : {}),
   });
   try {
@@ -20,46 +22,82 @@ async function checkBrowser(type, name, options = {}) {
       viewport: { width: 1440, height: 1000 },
       ...options,
     });
-    const page = await context.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("console", (message) => {
-      if (message.type() === "error") errors.push(message.text());
-    });
-    await page.addInitScript(() => {
-      let seed = 1;
-      Math.random = () => {
-        seed |= 0;
-        seed = (seed + 0x6d2b79f5) | 0;
-        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-      };
+    const page = await context.newPage(),
+      errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    page.on("console", (m) => {
+      if (m.type() === "error") errors.push(m.text());
     });
     await page.goto(url);
     await page.waitForFunction(
-      () => document.querySelectorAll("[data-type]").length === 6,
+      () => document.querySelector("canvas").dataset.ready === "true",
     );
-    await page.waitForFunction(
-      () =>
-        document
-          .querySelector("canvas")
-          .getContext("2d")
-          .getImageData(20, 20, 1, 1).data[3] === 255,
+    assert.equal(await page.locator("#render-error").isVisible(), false);
+    assert.equal(
+      await page.locator("canvas").getAttribute("data-renderer"),
+      "three-webgl",
     );
-    const slug = name.toLowerCase().replaceAll(" ", "-");
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
       true,
-      "no horizontal overflow",
     );
-    const background = await page
-      .locator("canvas")
-      .evaluate((c) => [...c.getContext("2d").getImageData(20, 20, 1, 1).data]);
-    assert.equal(background[3], 255);
-    assert.ok(background[1] > background[0], "teal board is rendered");
+    // Inspect state only in the test harness, with no production debug globals.
+    await page.evaluate(async () => {
+      const { Game } = await import("./src/game.js");
+      const { Renderer } = await import("./src/renderer.js");
+      const update = Game.prototype.update,
+        frame = Renderer.prototype.frame;
+      Game.prototype.update = function (dt) {
+        window.__qaGame = this;
+        return update.call(this, dt);
+      };
+      Renderer.prototype.frame = function (...args) {
+        window.__qaRenderer = this;
+        return frame.apply(this, args);
+      };
+    });
+    await page.waitForFunction(() => window.__qaRenderer && window.__qaGame);
+    const details = await page.evaluate(() => {
+      const r = window.__qaRenderer;
+      let meshes = 0;
+      r.scene.traverse((o) => {
+        if (o.isMesh) meshes++;
+      });
+      return {
+        webgl2: r.webgl.getContext() instanceof WebGL2RenderingContext,
+        meshes,
+        triangles: r.webgl.info.render.triangles,
+      };
+    });
+    assert.equal(details.webgl2, true);
+    assert.ok(details.meshes > 40);
+    assert.ok(details.triangles > 1000);
+    async function checkContextRecovery(pausedAfter) {
+      await page.evaluate(() => {
+        window.__qaContextLoss = window.__qaRenderer.webgl
+          .getContext()
+          .getExtension("WEBGL_lose_context");
+        window.__qaContextLoss.loseContext();
+      });
+      await page.waitForFunction(
+        () => !document.querySelector("#render-error").hidden,
+      );
+      await page.waitForTimeout(150);
+      await page.evaluate(() => window.__qaContextLoss.restoreContext());
+      await page.waitForFunction(
+        () =>
+          !window.__qaRenderer.contextLost &&
+          document.querySelector("#render-error").hidden,
+      );
+      assert.equal(
+        await page.evaluate(() => window.__qaGame.paused),
+        pausedAfter,
+      );
+    }
+    if (name === "Chrome desktop") await checkContextRecovery(false);
+    const slug = name.toLowerCase().replaceAll(" ", "-");
     await page.screenshot({
       path: `test-results/${slug}-start.png`,
       fullPage: true,
@@ -73,17 +111,121 @@ async function checkBrowser(type, name, options = {}) {
     await page.locator("#mobile-records").click();
     assert.match(await page.locator("#record-list").innerText(), /第一段/);
     await page.locator('[data-close="records-dialog"]').click();
-    await page.locator("#start").click();
-    await page.waitForTimeout(1000);
-    assert.match(
-      await page.locator("#board-status").innerText(),
-      /DEFENSE ACTIVE/,
+    async function pointFor(col, row, height = 18) {
+      await page.locator("canvas").scrollIntoViewIfNeeded();
+      return page.evaluate(
+        async ({ col, row, height }) => {
+          const { projectBoard } = await import("./src/board-view.js");
+          return projectBoard(
+            window.__qaRenderer.camera,
+            document.querySelector("canvas").getBoundingClientRect(),
+            col * 60 + 30,
+            row * 60 + 30,
+            height,
+          );
+        },
+        { col, row, height },
+      );
+    }
+    async function clickCell(col, row, height = 18) {
+      const p = await pointFor(col, row, height);
+      await page.mouse.click(p.x, p.y);
+    }
+    // Click a visible 3D bumper, use its context controls, then repeat in top view.
+    for (const mode of ["3d", "top"]) {
+      await page.locator(`[data-view="${mode}"]`).click();
+      await clickCell(2, 9);
+      assert.equal(await page.locator("#selection-toolbar").isVisible(), true);
+      const before = await page.evaluate(
+        () =>
+          window.__qaGame.bumpers.find((b) => b.col === 2 && b.row === 9).angle,
+      );
+      await page.locator("#rotate-selected").click();
+      const after = await page.evaluate(
+        () =>
+          window.__qaGame.bumpers.find((b) => b.col === 2 && b.row === 9).angle,
+      );
+      assert.ok(Math.abs(after - before - Math.PI / 4) < 1e-8);
+      await page.locator("#remove-selected").click();
+      assert.equal(
+        await page.evaluate(() => window.__qaGame.bumpers.length),
+        1,
+      );
+      await page.locator('[data-type="standard"]').click();
+      await clickCell(2, 9, 0);
+      assert.equal(
+        await page.evaluate(() => window.__qaGame.bumpers.length),
+        2,
+      );
+      await page.locator("#clear-selected").click();
+    }
+    await page.locator('[data-view="3d"]').click();
+    // Touch gestures must hit the projected board, including raised object tops.
+    const point = await pointFor(2, 9);
+    const startTouch = async (ids) =>
+      page.locator("canvas").evaluate(
+        (c, { ids, point }) => {
+          c.setPointerCapture = () => {};
+          for (const id of ids)
+            c.dispatchEvent(
+              new PointerEvent("pointerdown", {
+                bubbles: true,
+                pointerId: id,
+                pointerType: "touch",
+                button: 0,
+                clientX: point.x,
+                clientY: point.y,
+              }),
+            );
+        },
+        { ids, point },
+      );
+    const endTouch = async (ids) =>
+      page.locator("canvas").evaluate((c, ids) => {
+        for (const id of ids)
+          c.dispatchEvent(
+            new PointerEvent("pointerup", {
+              bubbles: true,
+              pointerId: id,
+              pointerType: "touch",
+            }),
+          );
+      }, ids);
+    const initialAngle = await page.evaluate(
+      () =>
+        window.__qaGame.bumpers.find((b) => b.col === 2 && b.row === 9).angle,
     );
+    await startTouch([11]);
+    await page.waitForTimeout(900);
+    await endTouch([11]);
+    assert.ok(
+      Math.abs(
+        (await page.evaluate(
+          () =>
+            window.__qaGame.bumpers.find((b) => b.col === 2 && b.row === 9)
+              .angle,
+        )) -
+          initialAngle -
+          Math.PI / 4,
+      ) < 1e-8,
+    );
+    await startTouch([21, 22]);
+    await page.waitForTimeout(900);
+    await endTouch([21, 22]);
+    assert.equal(await page.evaluate(() => window.__qaGame.bumpers.length), 1);
+    await page.locator('[data-type="standard"]').click();
+    await clickCell(2, 9, 0);
+    await page.locator("#start").click();
+    if (name === "Chrome desktop") {
+      await checkContextRecovery(true);
+      await page.locator("#resume").click();
+    }
+    await page.waitForTimeout(700);
+    assert.match(await page.locator("#board-status").innerText(), /防线营业/);
     await page.locator("#pause").click();
-    const paused = await page.locator("#timer").innerText();
-    await page.waitForTimeout(300);
-    assert.equal(await page.locator("#timer").innerText(), paused);
-    assert.equal(await page.locator("#pause-overlay").isVisible(), true);
+    const elapsed = await page.locator("#timer").innerText();
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator("#timer").innerText(), elapsed);
     await page.locator("#resume").click();
     await page.locator("#aim").fill("12");
     await page.locator("#aim-confirm").click();
@@ -93,135 +235,73 @@ async function checkBrowser(type, name, options = {}) {
       await page.locator("#sound").getAttribute("aria-pressed"),
       "false",
     );
-    // Tool buttons are the accessible equivalent of mouse and touch gestures.
-    await page.locator('[data-tool="remove"]').click();
-    await page.locator("canvas").scrollIntoViewIfNeeded();
-    // Recompute viewport coordinates after mobile scrolling.
-    async function clickCell(col, row) {
-      const box = await page.locator("canvas").boundingBox();
-      await page.mouse.click(
-        box.x + ((col + 0.5) / 9) * box.width,
-        box.y + ((row + 0.5) / 14) * box.height,
-      );
-    }
-    await clickCell(2, 9);
-    assert.match(await page.locator("#bumper-count").innerText(), /01/);
-    await page.locator('[data-type="standard"]').click();
-    await page.locator("canvas").scrollIntoViewIfNeeded();
-    await clickCell(2, 9);
-    assert.match(await page.locator("#bumper-count").innerText(), /02/);
-    await page.locator('[data-tool="rotate"]').click();
-    await page.locator("canvas").scrollIntoViewIfNeeded();
-    await clickCell(2, 9);
-    await page.locator("#pause").click();
-    await page.locator("#resume").click();
     await page.screenshot({
       path: `test-results/${slug}-playing.png`,
       fullPage: true,
     });
-    assert.deepEqual(errors, [], "no browser console errors");
     if (name === "Chrome desktop") {
-      // Accelerate wall time without changing game logic or adding test hooks to production.
-      await page.clock.install();
-      for (
-        let i = 0;
-        i < 90 && !(await page.locator("#reward-dialog").isVisible());
-        i++
-      )
-        await page.clock.runFor(500);
-      assert.equal(
-        await page.locator("#reward-dialog").isVisible(),
-        true,
-        "reward UI is reachable",
+      // Advance the real simulation to its next reward, then observe its real six-second UI timeout.
+      await page.evaluate(() => {
+        const g = window.__qaGame;
+        for (let i = 0; i < 3600 && g.phase === "wave"; i++) g.update(1 / 60);
+      });
+      await page.waitForFunction(
+        () => document.querySelector("#reward-dialog").open,
       );
       assert.equal(await page.locator("[data-card]").count(), 3);
       await page.screenshot({
         path: "test-results/reward.png",
         fullPage: true,
       });
-      await page.clock.runFor(6100);
-      assert.equal(
-        await page.locator("#reward-dialog").isVisible(),
-        false,
-        "timeout resumes play",
+      await page.waitForFunction(
+        () => !document.querySelector("#reward-dialog").open,
+        {},
+        { timeout: 15000 },
       );
       assert.equal(await page.locator("#wave").innerText(), "02");
-      // Test a real touch long-press via PointerEvents on a desktop viewport.
-      await page.locator("canvas").evaluate((c) => {
-        const r = c.getBoundingClientRect();
-        const x = r.left + (2.5 / 9) * r.width,
-          y = r.top + (9.5 / 14) * r.height;
-        c.setPointerCapture = () => {};
-        c.dispatchEvent(
-          new PointerEvent("pointerdown", {
-            bubbles: true,
-            pointerId: 11,
-            pointerType: "touch",
-            button: 0,
-            clientX: x,
-            clientY: y,
-          }),
-        );
-      });
-      await page.clock.runFor(850);
-      await page
-        .locator("canvas")
-        .evaluate((c) =>
-          c.dispatchEvent(
-            new PointerEvent("pointerup", {
-              bubbles: true,
-              pointerId: 11,
-              pointerType: "touch",
-            }),
-          ),
-        );
-      assert.match(
-        await page.locator("#bumper-count").innerText(),
-        /02/,
-        "long press rotates, does not delete",
-      );
-      await page.locator("canvas").evaluate((c) => {
-        const r = c.getBoundingClientRect();
-        for (const id of [21, 22]) c.dispatchEvent(new PointerEvent("pointerdown", {
-          bubbles: true, pointerId: id, pointerType: "touch", button: 0,
-          clientX: r.left + 2.5 / 9 * r.width,
-          clientY: r.top + 9.5 / 14 * r.height,
-        }));
-      });
-      await page.clock.runFor(850);
-      await page.locator("canvas").evaluate((c) => {
-        for (const id of [21, 22]) c.dispatchEvent(new PointerEvent("pointerup", {
-          bubbles: true, pointerId: id, pointerType: "touch",
-        }));
-      });
-      assert.match(await page.locator("#bumper-count").innerText(), /01/, "two-finger hold recycles one bumper");
-      // Offline navigation must retain the playable app and all local modules.
       await page.evaluate(() => navigator.serviceWorker.ready);
+      await page.waitForFunction(() => !!navigator.serviceWorker.controller);
       await context.setOffline(true);
       await page.reload();
       await page.waitForFunction(
-        () => document.querySelectorAll("[data-type]").length === 6,
+        () => document.querySelector("canvas").dataset.ready === "true",
       );
-      assert.equal(await page.locator("#start").isVisible(), true);
+      assert.equal(await page.locator("#start").isEnabled(), true);
       assert.equal(
         await page.locator("#sound").getAttribute("aria-pressed"),
         "false",
-        "settings survive reload",
       );
       await context.setOffline(false);
+      const unsupported = await context.newPage();
+      await unsupported.addInitScript(() => {
+        const getContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+          return type.startsWith("webgl")
+            ? null
+            : getContext.call(this, type, ...args);
+        };
+      });
+      await unsupported.goto(url);
+      await unsupported.waitForFunction(
+        () => !document.querySelector("#render-error").hidden,
+      );
+      assert.equal(await unsupported.locator("#start").isDisabled(), true);
+      await unsupported.close();
     }
-    results.push({ browser: name, passed: true, errors });
+    assert.deepEqual(errors, []);
+    results.push({ browser: name, passed: true, ...details });
     await writeFile(
-      "test-results/browser-results.json",
+      "test-results/browser-results-3d.json",
       JSON.stringify(results, null, 2),
     );
-    console.log(`PASS ${name}`);
+    console.log(
+      `PASS ${name}: ${details.meshes} 3D meshes, ${details.triangles} triangles`,
+    );
   } finally {
     await browser.close();
   }
 }
-
-const cases = [
+for (const [type, name, options] of [
   [chromium, "Chrome desktop"],
   [
     chromium,
@@ -234,11 +314,6 @@ const cases = [
     },
   ],
   [webkit, "WebKit desktop"],
-];
-for (const [type, name, options] of cases)
+])
   if (!process.env.TEST_BROWSER || name.includes(process.env.TEST_BROWSER))
     await checkBrowser(type, name, options);
-await writeFile(
-  "test-results/browser-results.json",
-  JSON.stringify(results, null, 2),
-);

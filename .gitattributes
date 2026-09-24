@@ -1,0 +1,2 @@
+# 第三方生成文件内嵌的 GLSL 字符串保留上游空白。
+vendor/three/*.js -whitespace linguist-vendored=true
