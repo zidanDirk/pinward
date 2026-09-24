@@ -1,15 +1,15 @@
 {
   "id": "./",
-  "name": "PINWARD · 弹珠防线",
+  "name": "PINWARD 3D · 弹珠防线",
   "short_name": "弹珠防线",
-  "description": "让环境成为武器。五分钟一局的弹球 Roguelike 塔防。",
+  "description": "小球上场，烦恼退场。五分钟一局的 3D 弹珠塔防。",
   "lang": "zh-CN",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#eeeee6",
-  "theme_color": "#163d40",
+  "background_color": "#f7f7fc",
+  "theme_color": "#5355ef",
   "icons": [
     {
       "src": "./icons/icon-192.png",

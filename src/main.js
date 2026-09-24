@@ -1,8 +1,9 @@
-import { Game } from "./game.js";
+import { Game, COMBO_WINDOW } from "./game.js";
 import { Renderer } from "./renderer.js";
 import { ArcadeAudio } from "./audio.js";
 import { TYPES } from "./cards.js";
-import { STEP, WIDTH, HEIGHT, gridPosition, clamp } from "./physics.js";
+import { STEP, clamp } from "./physics.js";
+import { BOSS_PHASES } from "./waves.js";
 import { readProfile, saveProfile, recordRun, buyUpgrade } from "./storage.js";
 
 const $ = (id) => document.getElementById(id);
@@ -59,6 +60,7 @@ function vibrate(duration = 10) {
 function setTool(next) {
   tool = next;
   renderer.tool = next;
+  renderer.selectedCell = null;
   document.querySelectorAll("[data-tool]").forEach((b) => {
     b.classList.toggle("active", b.dataset.tool === next);
     b.setAttribute("aria-pressed", String(b.dataset.tool === next));
@@ -80,13 +82,13 @@ function updateUI(force = false) {
     over: game.won ? "章节通关" : "防线失守",
   }[game.phase];
   $("board-status").textContent = game.paused
-    ? "SYSTEM PAUSED"
+    ? "休息一下"
     : {
-        build: "SYSTEM READY",
-        wave: "DEFENSE ACTIVE",
-        reward: "WAVE CLEAR",
-        boss: "BOSS INBOUND",
-        over: "RUN COMPLETE",
+        build: "准备开弹",
+        wave: "防线营业中",
+        reward: "补充新队员",
+        boss: "BOSS 来啦",
+        over: "本局结束",
       }[game.phase];
   $("timer").textContent =
     `${String(Math.floor(game.elapsed / 60)).padStart(2, "0")}:${String(Math.floor(game.elapsed % 60)).padStart(2, "0")}`;
@@ -104,6 +106,7 @@ function updateUI(force = false) {
     const type = button.dataset.type,
       count = game.inventory[type];
     button.classList.toggle("selected", type === game.selected);
+    button.classList.toggle("available", count > 0);
     button.setAttribute("aria-pressed", String(type === game.selected));
     button.title = `${TYPES[type].name}反弹器，库存 ${count}`;
     const counter = button.querySelector(".inventory-count");
@@ -114,6 +117,25 @@ function updateUI(force = false) {
   $("detail-material").textContent = info.material;
   $("detail-text").textContent = info.description;
   $("detail-effect").textContent = info.effect;
+  const selected =
+    renderer.selectedCell &&
+    game.bumpers.find(
+      (b) =>
+        b.col === renderer.selectedCell.col &&
+        b.row === renderer.selectedCell.row,
+    );
+  $("selection-toolbar").hidden =
+    !selected || game.paused || !["build", "wave", "boss"].includes(game.phase);
+  if (selected)
+    $("selection-name").textContent =
+      `${TYPES[selected.type].name}${selected.disabled > 0 ? ` · 恢复 ${Math.ceil(selected.disabled)}s` : "反弹器"}`;
+  $("boss-hud").hidden = game.phase !== "boss";
+  if (game.boss) {
+    $("boss-health").style.transform =
+      `scaleX(${Math.max(0, game.boss.hp / game.boss.maxHp)})`;
+    $("boss-stage-label").textContent =
+      `${game.boss.stage + 1} / 3 · ${BOSS_PHASES[game.boss.order[game.boss.stage]].name}`;
+  }
   $("start-overlay").hidden = game.phase !== "build";
   $("start-choice").hidden = !game.choiceUnlocked;
   $("pause-overlay").hidden =
@@ -125,7 +147,8 @@ function updateUI(force = false) {
     "aria-label",
     profile.muted ? "开启声音" : "关闭声音",
   );
-  $("sound").textContent = profile.muted ? "♫̸" : "♪";
+  $("sound").textContent = "♪";
+  $("sound").classList.toggle("muted", profile.muted);
   $("launch-status").textContent =
     game.phase === "build"
       ? "发射器待命"
@@ -154,10 +177,11 @@ function updateUI(force = false) {
   const comboCount = Math.max(0, game.comboCount | 0);
   const comboTier = Math.max(0, game.comboTier | 0);
   const comboMultiplier = Math.max(1, comboTier);
-  $("combo-text").textContent = `×${comboCount} · ${comboMultiplier}×`;
+  $("combo-count").textContent = comboCount;
+  $("combo-text").textContent = `连击 · ${comboMultiplier}× 得分`;
   const comboBadge = $("combo-badge");
   const inactive = comboCount <= 0;
-  comboBadge.classList.toggle("inactive", inactive);
+  comboBadge.hidden = inactive || !["wave", "boss"].includes(game.phase);
   comboBadge.setAttribute(
     "aria-label",
     inactive
@@ -165,7 +189,7 @@ function updateUI(force = false) {
       : `连击 ${comboCount} 次，得分倍率 ${comboMultiplier} 倍`,
   );
   $("combo-progress").style.transform =
-    `scaleX(${inactive ? 0 : Math.max(0, game.comboTimer / 2)})`;
+    `scaleX(${inactive ? 0 : Math.max(0, game.comboTimer / COMBO_WINDOW)})`;
   if (force || lastPhase !== game.phase) {
     if (game.phase === "reward") showRewards();
     else if ($("reward-dialog").open) $("reward-dialog").close();
@@ -226,9 +250,7 @@ function newGame(instant) {
   lastPhase = "";
   recorded = false;
   accumulator = 0;
-  renderer.effects = [];
-  renderer.particles.forEach((p) => (p.life = 0));
-  renderer.shake = 0;
+  renderer.reset();
   bannerTime = 0;
   $("boss-banner").hidden = true;
   $("aim").value = "0";
@@ -262,15 +284,26 @@ function showUtility(id) {
 
 function applyAction(cell, action = tool) {
   audio.unlock();
-  if (game.paused || !["build", "wave", "boss"].includes(game.phase)) return;
+  if (!cell || game.paused || !["build", "wave", "boss"].includes(game.phase))
+    return;
+  const existing = game.bumpers.find(
+    (b) => b.col === cell.col && b.row === cell.row,
+  );
+  if (action === "place" && existing) {
+    renderer.selectedCell = cell;
+    updateUI();
+    return;
+  }
   const success =
     action === "rotate"
       ? game.rotate(cell.col, cell.row)
       : action === "remove"
         ? game.remove(cell.col, cell.row)
         : game.place(cell.col, cell.row);
-  if (success) vibrate(15);
-  else if (action === "place") {
+  if (success) {
+    vibrate(15);
+    renderer.selectedCell = action === "remove" ? null : cell;
+  } else if (action === "place") {
     if (cell.row < 2 || cell.row > 11)
       toast("入口与基地需要留空，请放在中间 10 行。");
     else if (game.bumpers.some((b) => b.col === cell.col && b.row === cell.row))
@@ -287,11 +320,7 @@ let holdTimer = null,
   multiGesture = false;
 const canvas = $("board");
 function cellFor(event) {
-  const rect = canvas.getBoundingClientRect();
-  return gridPosition(
-    ((event.clientX - rect.left) / rect.width) * WIDTH,
-    ((event.clientY - rect.top) / rect.height) * HEIGHT,
-  );
+  return renderer.pick(event.clientX, event.clientY);
 }
 function cancelHold() {
   clearTimeout(holdTimer);
@@ -299,10 +328,15 @@ function cancelHold() {
 }
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
+  const cell = cellFor(event);
+  if (!cell) {
+    renderer.selectedCell = null;
+    updateUI();
+    return;
+  }
   event.preventDefault();
   canvas.focus({ preventScroll: true });
   canvas.setPointerCapture(event.pointerId);
-  const cell = cellFor(event);
   pointers.set(event.pointerId, {
     cell,
     x: event.clientX,
@@ -371,11 +405,45 @@ window.addEventListener("blur", () => {
   }
 });
 
-document
-  .querySelectorAll("[data-tool]")
-  .forEach((button) =>
-    button.addEventListener("click", () => setTool(button.dataset.tool)),
-  );
+document.querySelectorAll("[data-tool]").forEach((button) =>
+  button.addEventListener("click", () => {
+    setTool(button.dataset.tool);
+    updateUI();
+  }),
+);
+document.querySelectorAll("[data-view]").forEach((button) =>
+  button.addEventListener("click", () => {
+    renderer.setView(button.dataset.view);
+    document.querySelectorAll("[data-view]").forEach((b) => {
+      b.classList.toggle("active", b === button);
+      b.setAttribute("aria-pressed", String(b === button));
+    });
+  }),
+);
+$("rotate-selected").addEventListener("click", () =>
+  applyAction(renderer.selectedCell, "rotate"),
+);
+$("remove-selected").addEventListener("click", () =>
+  applyAction(renderer.selectedCell, "remove"),
+);
+$("clear-selected").addEventListener("click", () => {
+  renderer.selectedCell = null;
+  updateUI();
+});
+canvas.addEventListener("webglcontextlost", (event) => {
+  event.preventDefault();
+  renderer.contextLost = true;
+  game.paused = true;
+  $("render-error").hidden = false;
+  updateUI();
+});
+canvas.addEventListener("webglcontextrestored", () => {
+  renderer.contextLost = false;
+  $("render-error").hidden = true;
+  game.paused = !["build", "over"].includes(game.phase);
+  renderer.resize();
+  updateUI();
+});
 $("inventory").addEventListener("click", (event) => {
   const button = event.target.closest("[data-type]");
   if (button) {
@@ -447,6 +515,27 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     togglePause();
     return;
+  }
+  if (
+    !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)
+  ) {
+    const number = /^Digit([1-6])$/.exec(event.code);
+    if (number) {
+      event.preventDefault();
+      document.querySelectorAll("[data-type]")[Number(number[1]) - 1].click();
+      canvas.focus({ preventScroll: true });
+      return;
+    }
+    if (event.code === "KeyR" && renderer.selectedCell) {
+      event.preventDefault();
+      applyAction(renderer.selectedCell, "rotate");
+      return;
+    }
+    if (["Delete", "Backspace"].includes(event.code) && renderer.selectedCell) {
+      event.preventDefault();
+      applyAction(renderer.selectedCell, "remove");
+      return;
+    }
   }
   if (
     ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(
@@ -620,6 +709,7 @@ new ResizeObserver(() => {
 }).observe(canvas);
 updateUI(true);
 renderer.frame(game, 0, 1);
+$("start").disabled = false;
 requestAnimationFrame(frame);
 if ("serviceWorker" in navigator)
   navigator.serviceWorker.register("./sw.js").catch(() => {});
