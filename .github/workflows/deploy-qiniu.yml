@@ -1,0 +1,74 @@
+name: Validate and deploy H5 game to Qiniu
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qiniu-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate game
+        run: |
+          npm run check
+          npm test
+
+      - name: Package static site
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          cp index.html style.css sw.js manifest.webmanifest "$RUNNER_TEMP/site/"
+          cp -R src icons "$RUNNER_TEMP/site/"
+          test -f "$RUNNER_TEMP/site/index.html"
+          test -f "$RUNNER_TEMP/site/src/main.js"
+          test -f "$RUNNER_TEMP/site/icons/icon.svg"
+
+      - name: Setup Qshell
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 \
+            https://github.com/qiniu/qshell/releases/download/v2.19.12/qshell-v2.19.12-linux-amd64.tar.gz \
+            -o "$RUNNER_TEMP/qshell.tar.gz"
+          printf '%s  %s\n' \
+            '19edaf7337f08609d2570b6e1337ca5a912bfe45155133a6b7fc66efa53bf965' \
+            "$RUNNER_TEMP/qshell.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/qshell.tar.gz" -C "$RUNNER_TEMP"
+          test -x "$RUNNER_TEMP/qshell"
+
+      - name: Upload to Qiniu Kodo
+        if: github.event_name == 'push'
+        env:
+          QINIU_AK: ${{ secrets.QINIU_AK }}
+          QINIU_SK: ${{ secrets.QINIU_SK }}
+          QINIU_BUCKET: ${{ secrets.QINIU_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$QINIU_AK" || -z "$QINIU_SK" || -z "$QINIU_BUCKET" ]]; then
+            echo "QINIU_AK, QINIU_SK and QINIU_BUCKET must be configured as repository secrets."
+            exit 1
+          fi
+          "$RUNNER_TEMP/qshell" account "$QINIU_AK" "$QINIU_SK" qiniu-deploy-user
+          "$RUNNER_TEMP/qshell" qupload2 \
+            --src-dir="$RUNNER_TEMP/site" \
+            --bucket="$QINIU_BUCKET" \
+            --key-prefix=pinward/ \
+            --overwrite \
+            --rescan-local
