@@ -52,6 +52,9 @@ export class Game {
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboTier = 0;
+    // 本波是否漏怪：只描述当前波的漏怪聚合结果，仅在结算瞬间被读取并重置，
+    // 不参与 storage 持久化、不引入整局累计的 hadLeakAny，避免影响既有战绩结构。
+    this.waveHadLeak = false;
     this.time = 0;
     this.elapsed = 0;
     this.waveTime = 0;
@@ -61,6 +64,8 @@ export class Game {
     this.balls = [];
     this.monsters = [];
     this.bumpers = [];
+    this.plan = [];
+    this.spawned = 0;
     this.events = [];
     this.inventory = Object.fromEntries(
       Object.keys(TYPES).map((type) => [type, 0]),
@@ -118,6 +123,8 @@ export class Game {
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboTier = 0;
+    // 新一波开始时复位漏怪标记：完美波奖励仅按整波聚合判定。
+    this.waveHadLeak = false;
     this.emit("wave", { wave: this.wave });
   }
 
@@ -128,6 +135,8 @@ export class Game {
     this.launchIn = 0;
     this.balls = [];
     this.monsters = [];
+    // 进入 BOSS 阶段同样复位漏怪标记：BOSS 阶段的脉冲与潮群怪触底不参与波次奖励判定。
+    this.waveHadLeak = false;
     this.boss = {
       x: 270,
       y: 160,
@@ -336,6 +345,8 @@ export class Game {
   }
 
   leak() {
+    // 仅波次阶段的漏怪计入本波漏怪标记；BOSS 阶段的脉冲与潮群怪触底不参与奖励判定。
+    if (this.phase === "wave") this.waveHadLeak = true;
     this.hp = Math.max(0, this.hp - 1);
     this.emit("leak");
     if (this.hp <= 0) this.finish(false);
@@ -566,6 +577,13 @@ export class Game {
       !this.monsters.length &&
       this.waveTime >= WAVE_MIN_SECONDS
     ) {
+      // 无漏波奖励：仅在整波聚合判定为「无漏」时累加分数并发出一次 perfectWave 事件，
+      // 不乘连击倍率，不写入 storage、不改动 recordRun，避免影响既有战绩结构。
+      if (!this.waveHadLeak) {
+        const bonus = 50 + this.wave * 50;
+        this.score += bonus;
+        this.emit("perfectWave", { wave: this.wave, bonus });
+      }
       this.phase = "reward";
       this.cards = drawCards(this.wave, this.rng);
       this.rewardLeft = REWARD_SECONDS;

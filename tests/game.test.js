@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Game, COMBO_WINDOW, comboTierFor } from "../src/game.js";
 import { createBall, createMonster } from "../src/entities.js";
 import { TYPES, drawCards } from "../src/cards.js";
-import { wavePlan, bossOrder } from "../src/waves.js";
+import { wavePlan, bossOrder, WAVE_MIN_SECONDS, REWARD_SECONDS } from "../src/waves.js";
 import { seededRandom, STEP } from "../src/physics.js";
 import {
   defaultProfile,
@@ -565,4 +565,165 @@ test("combo timer freezes while paused and resumes afterwards", () => {
   assert.ok(
     game.events.some((e) => e.type === "comboBreak"),
   );
+});
+
+test("leak during wave phase flags waveHadLeak; boss-phase leak does not", () => {
+  const game = new Game();
+  // 波次阶段漏怪：标记置位
+  game.phase = "wave";
+  game.wave = 3;
+  assert.equal(game.waveHadLeak, false);
+  game.leak();
+  assert.equal(game.waveHadLeak, true);
+  assert.equal(game.hp, 9);
+  // 同一帧再 leak：标记保持 true，HP 继续扣血
+  game.leak();
+  assert.equal(game.waveHadLeak, true);
+  assert.equal(game.hp, 8);
+  // BOSS 阶段：标记不被置位
+  game.beginBoss();
+  assert.equal(game.waveHadLeak, false);
+  game.leak();
+  assert.equal(game.waveHadLeak, false);
+  // BOSS 脉冲路径：把 pulseIn 置 0，让 updateBoss 自己调用 leak()，同样不置位
+  game.boss.pulseIn = 0;
+  game.updateBoss(STEP);
+  assert.equal(game.waveHadLeak, false);
+});
+
+test("beginWave resets waveHadLeak so two perfect waves emit two events", () => {
+  const game = new Game();
+  // 先让漏怪标记为 true，验证 beginWave 会复位
+  game.phase = "wave";
+  game.wave = 1;
+  game.waveHadLeak = true;
+  game.beginWave();
+  assert.equal(game.waveHadLeak, false);
+  assert.equal(game.wave, 2);
+  // 第一波结算：构造空波 + 空怪物 + 满足最短时长
+  game.events = [];
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  const firstPerfect = game.events.filter((e) => e.type === "perfectWave");
+  assert.equal(firstPerfect.length, 1);
+  assert.equal(firstPerfect[0].wave, 2);
+  assert.equal(firstPerfect[0].bonus, 50 + 2 * 50);
+  // 手动调用 chooseCard 走通 beginWave 路径（自动选牌会先发 wave 事件并清零标记）
+  // 这里直接 beginWave 进入 wave 3，验证标记也被复位
+  game.waveHadLeak = true;
+  game.beginWave();
+  assert.equal(game.wave, 3);
+  assert.equal(game.waveHadLeak, false);
+  // 第二波同样构造完美结算
+  game.events = [];
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  const secondPerfect = game.events.filter((e) => e.type === "perfectWave");
+  assert.equal(secondPerfect.length, 1);
+  assert.equal(secondPerfect[0].wave, 3);
+  assert.equal(secondPerfect[0].bonus, 50 + 3 * 50);
+  // 累计：两次结算各产生一次 perfectWave，共 2 次
+  assert.equal(firstPerfect.length + secondPerfect.length, 2);
+});
+
+test("perfectWave at wave=1 grants exactly 100 score and one event with bonus payload", () => {
+  const game = new Game();
+  game.wave = 1;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.events = [];
+  const before = game.score;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  assert.equal(game.score - before, 100);
+  const events = game.events.filter((e) => e.type === "perfectWave");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].wave, 1);
+  assert.equal(events[0].bonus, 100);
+});
+
+test("perfectWave at wave=12 grants exactly 650 score and one event with bonus payload", () => {
+  const game = new Game();
+  game.wave = 12;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.events = [];
+  const before = game.score;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  assert.equal(game.score - before, 650);
+  const events = game.events.filter((e) => e.type === "perfectWave");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].wave, 12);
+  assert.equal(events[0].bonus, 650);
+});
+
+test("leak before settlement suppresses perfectWave bonus and event", () => {
+  const game = new Game();
+  game.wave = 5;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  // 结算前先 leak()：标记置位，结算时不应加分与发事件
+  game.leak();
+  assert.equal(game.waveHadLeak, true);
+  game.events = [];
+  const before = game.score;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  assert.equal(game.score, before);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 0);
+});
+
+test("perfectWave fires only once per wave and not after reward advances further", () => {
+  const game = new Game();
+  game.wave = 2;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.events = [];
+  const before = game.score;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  assert.equal(game.score - before, 50 + 2 * 50);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
+  // 进入 reward 后继续推进帧：reward 早退不会重复触发结算分支
+  advance(game, 1);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
+  // 超过 REWARD_SECONDS 自动选卡进入下一波：waveHadLeak 复位，且不会再补发上一波的事件
+  advance(game, REWARD_SECONDS);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
+});
+
+test("tenth leak ends the run before settlement so no bonus and no perfectWave fire", () => {
+  const game = new Game();
+  game.wave = 4;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.hp = 1;
+  // 制造结算失败：hp 归零后 finish(false) 把 phase 置为 "over"
+  // 此时再次调用 update() 会因 phase === "over" 早退，永远不会进入结算分支
+  game.leak();
+  assert.equal(game.phase, "over");
+  assert.equal(game.hp, 0);
+  game.events = [];
+  const before = game.score;
+  game.update(STEP);
+  assert.equal(game.phase, "over");
+  assert.equal(game.score, before);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 0);
 });
