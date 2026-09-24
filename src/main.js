@@ -587,6 +587,7 @@ function processEvents() {
     if (event.type === "leak") toast(`基地受到冲击，剩余 ${game.hp} 点血量。`);
     if (event.type === "comboTier") toast(`连击 ×${event.tier}`);
     if (event.type === "comboBreak") toast("连击中断");
+    if (event.type === "perfectWave") toast(`无漏击！+${event.bonus}`);
   }
 }
 
