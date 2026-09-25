@@ -85,7 +85,11 @@ export class ArcadeAudio {
     else if (event.type === "comboBreak")
       this.tone(220, 0.25, "sawtooth", 0.04, 60);
     else if (event.type === "perfectWave")
-      this.tone(660, 0.22, "triangle", 0.05, 1180);
+      this.tone(
+        ...(event.hot
+          ? [880, 0.3, "triangle", 0.06, 1320]
+          : [660, 0.22, "triangle", 0.05, 1180]),
+      );
   }
   update(dt, stage) {
     if (stage == null) {
