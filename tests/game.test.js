@@ -727,3 +727,136 @@ test("tenth leak ends the run before settlement so no bonus and no perfectWave f
   assert.equal(game.score, before);
   assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 0);
 });
+
+test("new Game() and beginWave() reset wavePeakCombo and wavePeakTier to 0", () => {
+  const game = new Game();
+  assert.equal(game.wavePeakCombo, 0);
+  assert.equal(game.wavePeakTier, 0);
+  game.wave = 1;
+  game.wavePeakCombo = 7;
+  game.wavePeakTier = 3;
+  game.beginWave();
+  assert.equal(game.wavePeakCombo, 0);
+  assert.equal(game.wavePeakTier, 0);
+});
+
+test("wavePeakCombo and wavePeakTier track the max within a wave and survive breakCombo", () => {
+  const game = new Game();
+  game.start();
+  game.plan = [];
+  const killOne = () => {
+    const m = createMonster(game.nextId++, "normal", 1, 4);
+    m.hp = 1;
+    game.monsters = [m];
+    game.damage(m, 1, "standard");
+  };
+  // 连击累加 1→5：peakCombo=5、peakTier=2（×2）
+  for (let i = 0; i < 5; i++) killOne();
+  assert.equal(game.wavePeakCombo, 5);
+  assert.equal(game.wavePeakTier, 2);
+  // breakCombo() 清空 comboCount / comboTier，但峰值不下降
+  game.breakCombo();
+  assert.equal(game.comboCount, 0);
+  assert.equal(game.comboTier, 0);
+  assert.equal(game.wavePeakCombo, 5);
+  assert.equal(game.wavePeakTier, 2);
+  // 再累计到 12：peakCombo 取更大值 12、peakTier=3
+  for (let i = 0; i < 12; i++) killOne();
+  assert.equal(game.wavePeakCombo, 12);
+  assert.equal(game.wavePeakTier, 3);
+  assert.equal(game.comboTier, comboTierFor(12));
+});
+
+test("hot perfectWave doubles bonus and emits hot: true when wavePeakCombo >= 10", () => {
+  for (const [peak, expectedTier] of [
+    [10, 3],
+    [15, 4],
+  ]) {
+    const game = new Game();
+    game.wave = 1;
+    game.phase = "wave";
+    game.plan = [];
+    game.monsters = [];
+    game.waveTime = WAVE_MIN_SECONDS;
+    game.wavePeakCombo = peak;
+    game.wavePeakTier = expectedTier;
+    game.events = [];
+    const before = game.score;
+    game.update(STEP);
+    assert.equal(game.phase, "reward");
+    const events = game.events.filter((e) => e.type === "perfectWave");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].hot, true);
+    assert.equal(events[0].bonus, (50 + 1 * 50) * 2);
+    assert.equal(events[0].wave, 1);
+    assert.equal(game.score - before, (50 + 1 * 50) * 2);
+  }
+});
+
+test("non-hot perfectWave keeps bonus at 50+wave*50 and emits hot: false for peak 0 and 9", () => {
+  for (const peak of [0, 9]) {
+    const game = new Game();
+    game.wave = 3;
+    game.phase = "wave";
+    game.plan = [];
+    game.monsters = [];
+    game.waveTime = WAVE_MIN_SECONDS;
+    game.wavePeakCombo = peak;
+    game.wavePeakTier = comboTierFor(peak);
+    game.events = [];
+    const before = game.score;
+    game.update(STEP);
+    assert.equal(game.phase, "reward");
+    const events = game.events.filter((e) => e.type === "perfectWave");
+    assert.equal(events.length, 1);
+    assert.equal(events[0].hot, false);
+    assert.equal(events[0].bonus, 50 + 3 * 50);
+    assert.equal(events[0].wave, 3);
+    assert.equal(game.score - before, 50 + 3 * 50);
+  }
+});
+
+test("beginBoss resets peak fields and BOSS-phase kills never emit perfectWave", () => {
+  const game = new Game();
+  // 先用一次击杀把峰值拉高
+  game.start();
+  game.plan = [];
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1, "standard");
+  assert.equal(game.wavePeakCombo, 1);
+  assert.equal(game.wavePeakTier, 1);
+  // 进入 BOSS 阶段：峰值归零
+  game.beginBoss();
+  assert.equal(game.wavePeakCombo, 0);
+  assert.equal(game.wavePeakTier, 0);
+  // 终结 BOSS：registerKill 会再写一次峰值，但 phase 已经是 "over"
+  game.events = [];
+  game.damageBoss(999, "standard");
+  assert.equal(game.phase, "over");
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 0);
+});
+
+test("hot perfectWave fires exactly once and is not re-emitted on reward advance", () => {
+  const game = new Game();
+  game.wave = 1;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.wavePeakCombo = 12; // 触发 hot
+  game.wavePeakTier = comboTierFor(12);
+  game.events = [];
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
+  // reward 阶段推进：不补发 perfectWave
+  advance(game, 1);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
+  // 超过 REWARD_SECONDS 自动选卡进入下一波：beginWave 复位峰值且不再补发上一波事件
+  advance(game, REWARD_SECONDS);
+  assert.equal(game.wave, 2);
+  assert.equal(game.wavePeakCombo, 0);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
+});
