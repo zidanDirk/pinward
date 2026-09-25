@@ -55,6 +55,10 @@ export class Game {
     // 本波是否漏怪：只描述当前波的漏怪聚合结果，仅在结算瞬间被读取并重置，
     // 不参与 storage 持久化、不引入整局累计的 hadLeakAny，避免影响既有战绩结构。
     this.waveHadLeak = false;
+    // 本波峰值：仅用于结算瞬间读取，不写入 storage、不引入整局累计字段；
+    // breakCombo() 清空 comboCount / comboTier 时峰值保持不变，跨波 / 跨 BOSS 阶段静默归零。
+    this.wavePeakCombo = 0;
+    this.wavePeakTier = 0;
     this.time = 0;
     this.elapsed = 0;
     this.waveTime = 0;
@@ -125,6 +129,9 @@ export class Game {
     this.comboTier = 0;
     // 新一波开始时复位漏怪标记：完美波奖励仅按整波聚合判定。
     this.waveHadLeak = false;
+    // 跨波同步复位峰值字段：避免上一波连击污染本波结算判定。
+    this.wavePeakCombo = 0;
+    this.wavePeakTier = 0;
     this.emit("wave", { wave: this.wave });
   }
 
@@ -137,6 +144,9 @@ export class Game {
     this.monsters = [];
     // 进入 BOSS 阶段同样复位漏怪标记：BOSS 阶段的脉冲与潮群怪触底不参与波次奖励判定。
     this.waveHadLeak = false;
+    // BOSS 阶段峰值无结算意义，但与「同生命周期」一致仍然复位，避免跨 BOSS 阶段残留。
+    this.wavePeakCombo = 0;
+    this.wavePeakTier = 0;
     this.boss = {
       x: 270,
       y: 160,
@@ -309,6 +319,9 @@ export class Game {
         this.emit("comboTier", { count: this.comboCount, tier });
       }
     }
+    // 本波峰值只增不减：breakCombo() 清空 comboCount / comboTier 时峰值保持不变。
+    if (this.comboCount > this.wavePeakCombo) this.wavePeakCombo = this.comboCount;
+    if (this.comboTier > this.wavePeakTier) this.wavePeakTier = this.comboTier;
   }
 
   breakCombo() {
@@ -577,12 +590,14 @@ export class Game {
       !this.monsters.length &&
       this.waveTime >= WAVE_MIN_SECONDS
     ) {
-      // 无漏波奖励：仅在整波聚合判定为「无漏」时累加分数并发出一次 perfectWave 事件，
+      // 无漏波奖励：仅在整波聚合判定为「无漏」时累加分数并发出一次 perfectWave 事件；
+      // 当本波峰值连击 ≥10 时升级为「狂热无漏」，分数翻倍并发 hot: true。
       // 不乘连击倍率，不写入 storage、不改动 recordRun，避免影响既有战绩结构。
       if (!this.waveHadLeak) {
-        const bonus = 50 + this.wave * 50;
+        const isHot = this.wavePeakCombo >= 10;
+        const bonus = (50 + this.wave * 50) * (isHot ? 2 : 1);
         this.score += bonus;
-        this.emit("perfectWave", { wave: this.wave, bonus });
+        this.emit("perfectWave", { wave: this.wave, bonus, hot: isHot });
       }
       this.phase = "reward";
       this.cards = drawCards(this.wave, this.rng);
