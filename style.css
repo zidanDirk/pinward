@@ -338,6 +338,34 @@ a {
 .wave-dots i.current {
   background: #e0a2d1;
 }
+.shield-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.shield-badge strong {
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.shield-badge.available {
+  color: var(--blue);
+  border-color: #c9c9f3;
+  background: #eeedff;
+}
+.shield-badge.empty {
+  color: var(--muted);
+  border-color: var(--line);
+  background: #edeef2;
+}
 .hp-label b {
   font-size: 11px;
   font-variant-numeric: tabular-nums;

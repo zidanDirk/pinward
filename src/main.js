@@ -190,6 +190,18 @@ function updateUI(force = false) {
   );
   $("combo-progress").style.transform =
     `scaleX(${inactive ? 0 : Math.max(0, game.comboTimer / COMBO_WINDOW)})`;
+  // 护盾徽章同步：仅在 wave 阶段可见，根据 shieldLeft 切换可用 / 灰态。
+  const shieldLeft = Math.max(0, game.shieldLeft | 0);
+  const shieldBadge = $("shield-badge");
+  const shieldAvailable = shieldLeft > 0;
+  shieldBadge.hidden = game.phase !== "wave";
+  shieldBadge.classList.toggle("available", shieldAvailable);
+  shieldBadge.classList.toggle("empty", !shieldAvailable);
+  shieldBadge.setAttribute(
+    "aria-label",
+    shieldAvailable ? "本波护盾可用" : "本波护盾已用尽",
+  );
+  $("shield-count").textContent = `×${shieldLeft}`;
   if (force || lastPhase !== game.phase) {
     if (game.phase === "reward") showRewards();
     else if ($("reward-dialog").open) $("reward-dialog").close();
@@ -673,7 +685,10 @@ function processEvents() {
       $("boss-banner").hidden = false;
       bannerTime = 3;
     }
-    if (event.type === "leak") toast(`基地受到冲击，剩余 ${game.hp} 点血量。`);
+    if (event.type === "leak" && !event.shielded)
+      toast(`基地受到冲击，剩余 ${game.hp} 点血量。`);
+    if (event.type === "shieldSave")
+      toast(`护盾抵消！剩余 ${event.hpLeft} 点血量。`);
     if (event.type === "comboTier") toast(`连击 ×${event.tier}`);
     if (event.type === "comboBreak") toast("连击中断");
     if (event.type === "perfectWave") {
