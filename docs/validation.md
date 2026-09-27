@@ -13,6 +13,7 @@
 - BOSS 三机制及阶段切换、胜负结算、本地存储损坏 / 不可用、星币消费和重开清空。
 - 连击状态机：2.0 秒窗口内累加与重置、阈值 5/10/15 升级、×4 封顶、电击连锁逐杀累加、倍率真实乘进命中分与击杀分、BOSS 分数不乘倍率、非击杀命中不动连击、暂停冻结窗口、跨波 / 跨 BOSS 阶段静默清零且不发 comboBreak / comboTier 事件、超时只发一次 comboBreak。
 - 无漏波奖励：波次阶段漏怪置位 waveHadLeak、BOSS 脉冲与潮群怪触底不置位、beginWave 跨波复位、整波聚合判定结算时加分 50+wave*50 并发 perfectWave 事件、任一漏怪取消奖励、reward 推进不重复触发、胜负分支不越过结算、本局失败时不分发奖励；新增本波峰值 wavePeakCombo / wavePeakTier，仅在结算瞬间读取，不写入 storage、不引入整局累计字段，跨波与跨 BOSS 阶段均复位；峰值 ≥10 时升级为「狂热无漏」，分数翻倍并发 hot: true，否则沿用 50+wave*50 与 hot: false 的旧档位。
+- 每波一次性护盾：构造函数默认 0，beginWave 置 1、beginBoss 复位 0；护盾只抵消 HP 损失，但保留 waveHadLeak 标记与对应 leak{shielded:true} + shieldSave{hpLeft} 事件序列，因此该波仍不发放 perfectWave；BOSS 阶段与 shieldLeft 已耗尽的波次直接走原有扣血路径，不消耗护盾、不发 shieldSave；不写入 storage、不引入整局累计字段。新增覆盖：beginWave/beginBoss 字段刷新、首轮触底吸收、同一波第二次触底回归扣血、shieldLeft=0 行为逐字段一致、BOSS 阶段 leak 与 pulse 路径不发 shieldSave、护盾抵消波仍不发放奖励分；修正 10 次 leak 归零用例前置清零 shieldLeft，8 组固定种子通关模拟（won === true）不受影响。
 - 8 个固定种子，使用可重复的基础布局、电击 / 分裂优先卡牌选择，全部完成 12 波及三阶段 BOSS。含接近完整选牌等待的单局用时为 **293–321 秒**。这验证可通关与节奏，并不表示任何布局都能获胜。
 
 ## 浏览器与界面
