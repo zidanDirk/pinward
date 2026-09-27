@@ -158,6 +158,8 @@ test("bomb disables a bumper for five seconds and it recovers", () => {
 test("ten leaks end a run and rewards cannot resurrect it", () => {
   const game = new Game();
   game.start();
+  // 本波一次性护盾会吸收首轮触底的 HP 损失：此处显式清零以保持「10 次 leak 归零」语义。
+  game.shieldLeft = 0;
   for (let i = 0; i < 10; i++) game.leak();
   assert.equal(game.phase, "over");
   assert.equal(game.hp, 0);
@@ -724,6 +726,129 @@ test("tenth leak ends the run before settlement so no bonus and no perfectWave f
   const before = game.score;
   game.update(STEP);
   assert.equal(game.phase, "over");
+  assert.equal(game.score, before);
+  assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 0);
+});
+
+test("shieldLeft defaults to 0 and is set to 1 by beginWave and reset by beginBoss", () => {
+  const game = new Game();
+  assert.equal(game.shieldLeft, 0);
+  // 直接调用 beginWave（不依赖 start 路径）以验证字段刷新逻辑
+  game.beginWave();
+  assert.equal(game.shieldLeft, 1);
+  // 同一波内已被消耗后，第二次 beginWave 必须重新发放
+  game.shieldLeft = 0;
+  game.beginWave();
+  assert.equal(game.shieldLeft, 1);
+  // beginBoss 必须把残留的护盾复位为 0，避免跨阶段进入 BOSS 后仍生效
+  game.shieldLeft = 5;
+  game.beginBoss();
+  assert.equal(game.shieldLeft, 0);
+});
+
+test("wave-phase first leak with shieldLeft=1 absorbs HP and emits shielded leak + shieldSave", () => {
+  const game = new Game();
+  game.wave = 4;
+  game.phase = "wave";
+  game.shieldLeft = 1;
+  game.hp = 7;
+  game.events = [];
+  game.leak();
+  // 护盾已耗尽，但 waveHadLeak 仍置位，HP 不变
+  assert.equal(game.shieldLeft, 0);
+  assert.equal(game.waveHadLeak, true);
+  assert.equal(game.hp, 7);
+  // 事件顺序：先 leak{shielded:true}，后 shieldSave{hpLeft === 扣血前的 hp}
+  assert.deepEqual(
+    game.events.map((e) => e.type),
+    ["leak", "shieldSave"],
+  );
+  const [leakEvent, saveEvent] = game.events;
+  assert.equal(leakEvent.shielded, true);
+  assert.equal(saveEvent.hpLeft, 7);
+});
+
+test("wave-phase second leak after shield consumption applies normal HP loss and no shieldSave", () => {
+  const game = new Game();
+  game.wave = 4;
+  game.phase = "wave";
+  game.shieldLeft = 1;
+  game.hp = 7;
+  game.leak();
+  // 同一波内第二次触底：护盾已耗尽，走原有扣血路径
+  game.events = [];
+  game.leak();
+  assert.equal(game.shieldLeft, 0);
+  assert.equal(game.hp, 6);
+  assert.equal(game.waveHadLeak, true);
+  assert.equal(game.events.length, 1);
+  assert.equal(game.events[0].type, "leak");
+  assert.equal(game.events[0].shielded, undefined);
+  assert.equal(
+    game.events.some((e) => e.type === "shieldSave"),
+    false,
+  );
+});
+
+test("leak with shieldLeft=0 matches pre-change behavior on hp, waveHadLeak and event payload", () => {
+  const game = new Game();
+  game.wave = 4;
+  game.phase = "wave";
+  game.shieldLeft = 0;
+  game.hp = 7;
+  game.events = [];
+  game.leak();
+  assert.equal(game.hp, 6);
+  assert.equal(game.waveHadLeak, true);
+  assert.equal(game.events.length, 1);
+  assert.equal(game.events[0].type, "leak");
+  assert.equal(game.events[0].shielded, undefined);
+  assert.equal(
+    game.events.some((e) => e.type === "shieldSave"),
+    false,
+  );
+});
+
+test("beginBoss clears shieldLeft and BOSS leak / pulse paths never emit shieldSave", () => {
+  const game = new Game();
+  game.beginBoss();
+  assert.equal(game.shieldLeft, 0);
+  // BOSS 阶段直接 leak：不消耗护盾、不发 shieldSave
+  game.events = [];
+  game.leak();
+  assert.equal(game.shieldLeft, 0);
+  assert.equal(game.waveHadLeak, false);
+  assert.equal(game.hp, 9);
+  assert.equal(
+    game.events.some((e) => e.type === "shieldSave"),
+    false,
+  );
+  // BOSS 脉冲路径：让 updateBoss 自调 leak，同样不产生 shieldSave
+  game.events = [];
+  game.boss.pulseIn = 0;
+  game.updateBoss(STEP);
+  assert.equal(
+    game.events.some((e) => e.type === "shieldSave"),
+    false,
+  );
+});
+
+test("shield-absorbed wave still suppresses perfectWave bonus and event", () => {
+  const game = new Game();
+  game.wave = 5;
+  game.phase = "wave";
+  game.plan = [];
+  game.monsters = [];
+  game.waveTime = WAVE_MIN_SECONDS;
+  game.shieldLeft = 1;
+  // 护盾抵消漏怪：waveHadLeak 已被置位，结算时不加分、不发 perfectWave
+  game.leak();
+  assert.equal(game.waveHadLeak, true);
+  assert.equal(game.hp, 10);
+  game.events = [];
+  const before = game.score;
+  game.update(STEP);
+  assert.equal(game.phase, "reward");
   assert.equal(game.score, before);
   assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 0);
 });

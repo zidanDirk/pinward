@@ -55,6 +55,9 @@ export class Game {
     // 本波是否漏怪：只描述当前波的漏怪聚合结果，仅在结算瞬间被读取并重置，
     // 不参与 storage 持久化、不引入整局累计的 hadLeakAny，避免影响既有战绩结构。
     this.waveHadLeak = false;
+    // 每波一次性护盾：只描述当前波、仅在波次阶段生效；beginWave 置 1、beginBoss 复位 0，
+    // 不写入 storage、不引入整局累计字段，避免影响既有战绩结构。
+    this.shieldLeft = 0;
     // 本波峰值：仅用于结算瞬间读取，不写入 storage、不引入整局累计字段；
     // breakCombo() 清空 comboCount / comboTier 时峰值保持不变，跨波 / 跨 BOSS 阶段静默归零。
     this.wavePeakCombo = 0;
@@ -129,6 +132,8 @@ export class Game {
     this.comboTier = 0;
     // 新一波开始时复位漏怪标记：完美波奖励仅按整波聚合判定。
     this.waveHadLeak = false;
+    // 每波一次性护盾：本波首轮触底可吸收一次 HP 损失，跨波必须重新发放。
+    this.shieldLeft = 1;
     // 跨波同步复位峰值字段：避免上一波连击污染本波结算判定。
     this.wavePeakCombo = 0;
     this.wavePeakTier = 0;
@@ -144,6 +149,8 @@ export class Game {
     this.monsters = [];
     // 进入 BOSS 阶段同样复位漏怪标记：BOSS 阶段的脉冲与潮群怪触底不参与波次奖励判定。
     this.waveHadLeak = false;
+    // BOSS 阶段不消耗护盾：第 12 波未触底的护盾必须显式复位，避免进入 BOSS 后残留 1。
+    this.shieldLeft = 0;
     // BOSS 阶段峰值无结算意义，但与「同生命周期」一致仍然复位，避免跨 BOSS 阶段残留。
     this.wavePeakCombo = 0;
     this.wavePeakTier = 0;
@@ -360,6 +367,14 @@ export class Game {
   leak() {
     // 仅波次阶段的漏怪计入本波漏怪标记；BOSS 阶段的脉冲与潮群怪触底不参与奖励判定。
     if (this.phase === "wave") this.waveHadLeak = true;
+    // 波次阶段的一次性护盾：吸收本波第一次触底的 HP 损失，但仍保留漏怪标记与对应事件，
+    // 使「无漏波奖励」判定不受影响。BOSS 阶段或本波护盾已耗尽时直接走原有扣血路径。
+    if (this.phase === "wave" && this.shieldLeft > 0) {
+      this.shieldLeft--;
+      this.emit("leak", { shielded: true });
+      this.emit("shieldSave", { hpLeft: this.hp });
+      return;
+    }
     this.hp = Math.max(0, this.hp - 1);
     this.emit("leak");
     if (this.hp <= 0) this.finish(false);
