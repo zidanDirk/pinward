@@ -67,7 +67,8 @@ export class ArcadeAudio {
       );
     else if (event.type === "launch")
       this.tone(100, 0.18, "triangle", 0.05, 600);
-    else if (event.type === "leak") this.tone(130, 0.35, "sawtooth", 0.05, 35);
+    else if (event.type === "leak" && !event.shielded)
+      this.tone(130, 0.35, "sawtooth", 0.05, 35);
     else if (["place", "rotate", "card"].includes(event.type))
       this.tone(540, 0.1, "sine", 0.05, 720);
     else if (event.type === "bossStage")
@@ -90,6 +91,8 @@ export class ArcadeAudio {
           ? [880, 0.3, "triangle", 0.06, 1320]
           : [660, 0.22, "triangle", 0.05, 1180]),
       );
+    else if (event.type === "shieldSave")
+      this.tone(520, 0.18, "square", 0.05, 280);
   }
   update(dt, stage) {
     if (stage == null) {
