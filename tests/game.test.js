@@ -985,3 +985,207 @@ test("hot perfectWave fires exactly once and is not re-emitted on reward advance
   assert.equal(game.wavePeakCombo, 0);
   assert.equal(game.events.filter((e) => e.type === "perfectWave").length, 1);
 });
+
+test("manual aim within 0.6s window grants 200*comboMul skill shot on first kill", () => {
+  const game = new Game();
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  // 提前记录结算前倍率快照，与 game.damage 顶部 const comboMul 同口径
+  const before = game.score;
+  const mul = Math.max(1, game.comboTier);
+  const tierBefore = game.comboTier;
+  game.events = [];
+  game.manualAim = true;
+  game.launch();
+  // launch 之后窗口开启、标记为 false
+  assert.equal(game.skillShotWindow, 0.6);
+  assert.equal(game.skillShotConsumed, false);
+  game.damage(m, 999);
+  // 恰好一次 skillShot 事件，bonus 与 comboTier 与结算前快照一致
+  const events = game.events.filter((e) => e.type === "skillShot");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].bonus, 200 * mul);
+  assert.equal(events[0].comboTier, tierBefore);
+  assert.equal(game.skillShotConsumed, true);
+  assert.equal(game.skillShotWindow, 0);
+  // 总增分：命中 15 + 击杀 100 + 精准一击 200，全部乘结算前倍率快照
+  assert.equal(game.score - before, (15 + 100 + 200) * mul);
+});
+
+test("manual aim window only fires skill shot once even when multiple kills happen within it", () => {
+  const game = new Game();
+  const a = createMonster(game.nextId++, "normal", 1, 4);
+  const b = createMonster(game.nextId++, "normal", 1, 5);
+  a.hp = 1;
+  b.hp = 1;
+  game.monsters = [a, b];
+  game.events = [];
+  game.manualAim = true;
+  game.launch();
+  game.damage(a, 999);
+  // 首杀触发一次 skillShot、窗口被消化
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    1,
+  );
+  assert.equal(game.skillShotConsumed, true);
+  assert.equal(game.skillShotWindow, 0);
+  // 窗口内后续击杀：不再补发 skillShot
+  game.damage(b, 999);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    1,
+  );
+});
+
+test("auto aim (-15°..+15°) never opens skill shot window and never emits skillShot", () => {
+  const game = new Game();
+  // 拉到 tier 2（×2）后发球，验证自动瞄准不消费 skillShot 通道
+  game.comboCount = 5;
+  game.comboTier = comboTierFor(5);
+  game.events = [];
+  const before = game.score;
+  // 默认 manualAim 为 false，自动 ±15° 随机
+  game.launch();
+  assert.ok(game.skillShotWindow <= 0);
+  assert.equal(game.skillShotConsumed, false);
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+  // 仅命中 + 击杀（×2）：30 + 200 = 230
+  assert.equal(game.score - before, 230);
+  assert.equal(game.skillShotWindow, 0);
+});
+
+test("skill shot window expires naturally without bonus or event if no kill happens", () => {
+  const game = new Game();
+  game.manualAim = true;
+  game.launch();
+  assert.equal(game.skillShotWindow, 0.6);
+  // 推帧 0.6 + STEP，期间清空 monsters / plan 防止 launch()/spawn 干扰
+  game.monsters = [];
+  game.plan = [];
+  advance(game, 0.6 + STEP);
+  assert.ok(game.skillShotWindow <= 0);
+  game.events = [];
+  const before = game.score;
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+  // 默认 tier = 0、comboMul = 1，仅命中 + 击杀 = 15 + 100
+  assert.equal(game.score - before, 15 + 100);
+});
+
+test("beginWave, beginBoss and changeBossStage silently reset skill shot window", () => {
+  const game = new Game();
+  // beginWave 必须静默复位窗口与消耗标记
+  game.skillShotWindow = 0.3;
+  game.skillShotConsumed = true;
+  game.events = [];
+  game.beginWave();
+  assert.equal(game.skillShotWindow, 0);
+  assert.equal(game.skillShotConsumed, false);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+  // beginBoss 同样静默复位
+  game.skillShotWindow = 0.4;
+  game.skillShotConsumed = true;
+  game.events = [];
+  game.beginBoss();
+  assert.equal(game.skillShotWindow, 0);
+  assert.equal(game.skillShotConsumed, false);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+  // changeBossStage(1) 同样静默复位；与 beginBoss → changeBossStage(0) 幂等
+  game.skillShotWindow = 0.2;
+  game.skillShotConsumed = true;
+  game.events = [];
+  game.changeBossStage(1);
+  assert.equal(game.skillShotWindow, 0);
+  assert.equal(game.skillShotConsumed, false);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+});
+
+test("skill shot window is cleared between waves so next auto-launch has no carryover", () => {
+  const game = new Game();
+  game.wave = 1;
+  game.phase = "wave";
+  // 本波手动瞄准发球开窗：尚未结束本波
+  game.manualAim = true;
+  game.launch();
+  assert.equal(game.skillShotWindow, 0.6);
+  // 直接进入下一波：beginWave 必须显式复位窗口（场景：奖励阶段窗口冻结→换波抵消）
+  game.events = [];
+  game.beginWave();
+  assert.equal(game.wave, 2);
+  assert.equal(game.skillShotWindow, 0);
+  assert.equal(game.skillShotConsumed, false);
+  // 随后自动瞄准（manualAim 为 false）发球再击杀：不得触发 skillShot
+  game.plan = [];
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.launch();
+  game.damage(m, 1);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+});
+
+test("damageBoss path never triggers skill shot and boss kill reward stays 3000", () => {
+  const game = new Game();
+  game.beginBoss();
+  // 手动瞄准开窗：验证 damageBoss 路径不读窗口
+  game.manualAim = true;
+  game.launch();
+  assert.equal(game.skillShotWindow, 0.6);
+  game.events = [];
+  // 击杀 BOSS：仅 3000 固定奖励、不发 skillShot
+  const beforeBoss = game.score;
+  game.damageBoss(999, "standard");
+  assert.equal(game.score - beforeBoss, 3000);
+  assert.equal(
+    game.events.filter((e) => e.type === "skillShot").length,
+    0,
+  );
+  // BOSS 阶段召唤的普通怪走 damage() 时不影响 3000 分固定奖励路径：
+  // 即先杀普通怪（吃一次精准一击）再杀 BOSS，BOSS 的 3000 路径仍然独立不变
+  const game2 = new Game();
+  game2.beginBoss();
+  game2.manualAim = true;
+  game2.launch();
+  game2.events = [];
+  const m = createMonster(game2.nextId++, "normal", 12, 4);
+  m.hp = 1;
+  game2.monsters = [m];
+  game2.damage(m, 1);
+  // 普通怪击杀：comboMul = 1，命中 15 + 击杀 100 = 115
+  assert.equal(game2.skillShotConsumed, true);
+  // 再击杀 BOSS：3000 分固定奖励、不再发 skillShot
+  const beforeBoss2 = game2.score;
+  game2.damageBoss(999, "standard");
+  assert.equal(game2.score - beforeBoss2, 3000);
+  assert.equal(
+    game2.events.filter((e) => e.type === "skillShot").length,
+    1,
+  );
+});

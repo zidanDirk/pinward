@@ -62,6 +62,10 @@ export class Game {
     // breakCombo() 清空 comboCount / comboTier 时峰值保持不变，跨波 / 跨 BOSS 阶段静默归零。
     this.wavePeakCombo = 0;
     this.wavePeakTier = 0;
+    // 「精准一击」窗口：仅描述当前发球的击杀窗口，手动瞄准发球后开启 0.6 秒倒计时，
+    // 不写入 storage、不引入整局累计字段，避免影响既有战绩结构。
+    this.skillShotWindow = 0;
+    this.skillShotConsumed = false;
     this.time = 0;
     this.elapsed = 0;
     this.waveTime = 0;
@@ -137,6 +141,9 @@ export class Game {
     // 跨波同步复位峰值字段：避免上一波连击污染本波结算判定。
     this.wavePeakCombo = 0;
     this.wavePeakTier = 0;
+    // 跨波静默复位精准一击窗口：避免上一球残留窗口延续到下一球。
+    this.skillShotWindow = 0;
+    this.skillShotConsumed = false;
     this.emit("wave", { wave: this.wave });
   }
 
@@ -154,6 +161,9 @@ export class Game {
     // BOSS 阶段峰值无结算意义，但与「同生命周期」一致仍然复位，避免跨 BOSS 阶段残留。
     this.wavePeakCombo = 0;
     this.wavePeakTier = 0;
+    // 进入 BOSS 阶段静默复位精准一击窗口：BOSS 阶段的伤害走 damageBoss，不触发本窗口。
+    this.skillShotWindow = 0;
+    this.skillShotConsumed = false;
     this.boss = {
       x: 270,
       y: 160,
@@ -175,6 +185,9 @@ export class Game {
     this.comboCount = 0;
     this.comboTimer = 0;
     this.comboTier = 0;
+    // 跨 BOSS 阶段静默复位精准一击窗口：与 beginBoss 的复位幂等，且不重发任何事件。
+    this.skillShotWindow = 0;
+    this.skillShotConsumed = false;
     this.boss.stage = stage;
     this.boss.attackIn = 4;
     this.boss.warnings = [];
@@ -254,9 +267,16 @@ export class Game {
   }
 
   launch() {
+    const wasManual = this.manualAim;
     const angle =
       ((this.manualAim ? this.aim : this.rng() * 30 - 15) * Math.PI) / 180;
     this.manualAim = false;
+    // 手动瞄准发球：在建立球之前开启 0.6 秒精准一击窗口，沿用既有 emit("launch")，
+    // 不引入新的事件或字段，仅复用结算前倍率快照触发技能射击。
+    if (wasManual) {
+      this.skillShotWindow = 0.6;
+      this.skillShotConsumed = false;
+    }
     if (this.balls.length < 18)
       this.balls.push(createBall(this.nextId++, angle));
     this.emit("launch");
@@ -303,6 +323,15 @@ export class Game {
       }
     }
     if (monster.hp <= 0) {
+      // 精准一击：手动瞄准窗口内的首个击杀按结算前连击倍率补 200×倍率，
+      // 一次发球窗口只触发一次（skillShotConsumed 防止后续连锁补发）。
+      if (this.skillShotWindow > 0 && !this.skillShotConsumed) {
+        this.skillShotConsumed = true;
+        this.skillShotWindow = 0;
+        const bonus = 200 * comboMul;
+        this.score += bonus;
+        this.emit("skillShot", { bonus, comboTier: this.comboTier });
+      }
       this.kills++;
       this.score += MONSTERS[monster.type].score * multiplier * comboMul;
       this.emit("kill", {
@@ -449,6 +478,9 @@ export class Game {
   }
 
   update(dt) {
+    // 精准一击窗口与游戏阶段解耦：仅依赖挂钟时间，
+    // 暂停期间冻结，build / over / reward 期间继续倒计，到期不清零、不发任何事件。
+    if (!this.paused && this.skillShotWindow > 0) this.skillShotWindow -= dt;
     if (this.paused || this.phase === "build" || this.phase === "over") return;
     this.elapsed += dt;
     if (this.phase === "reward") {
