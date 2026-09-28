@@ -695,6 +695,7 @@ function processEvents() {
       toast(event.hot ? `狂热无漏！+${event.bonus}` : `无漏击！+${event.bonus}`);
       if (event.hot) vibrate(20);
     }
+    if (event.type === "skillShot") toast("精准一击！+" + event.bonus);
   }
 }
 

@@ -91,6 +91,7 @@ export class ArcadeAudio {
           ? [880, 0.3, "triangle", 0.06, 1320]
           : [660, 0.22, "triangle", 0.05, 1180]),
       );
+    else if (event.type === "skillShot") this.tone(990, 0.18, "triangle", 0.05, 1485);
     else if (event.type === "shieldSave")
       this.tone(520, 0.18, "square", 0.05, 280);
   }
