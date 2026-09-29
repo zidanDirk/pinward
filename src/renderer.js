@@ -13,6 +13,15 @@ const COLORS = {
   lime: 0xdbff82,
   white: 0xfffdf5,
 };
+// 命中飘字档位表：按 comboTier 分级配色与尺寸；tier 0/1 同属 ×1。
+const HIT_TIERS = [
+  { tier: 1, color: COLORS.white, width: 33, height: 25 },
+  { tier: 2, color: COLORS.lime, width: 38, height: 28 },
+  { tier: 3, color: COLORS.blue, width: 43, height: 31 },
+  { tier: 4, color: COLORS.pink, width: 50, height: 36 },
+];
+const hitTierFor = (tier) =>
+  tier >= 4 ? HIT_TIERS[3] : tier === 3 ? HIT_TIERS[2] : tier === 2 ? HIT_TIERS[1] : HIT_TIERS[0];
 
 export class Renderer {
   constructor(canvas) {
@@ -740,15 +749,16 @@ export class Renderer {
         });
       }
     }
-    if (e.type === "hit" && this.effects.length < 32) {
+    if (e.type === "hit" && Number.isFinite(e.score) && !this.reduced && this.effects.length < 32) {
+      const tier = hitTierFor(e.comboTier);
       const material = new THREE.SpriteMaterial({
-        map: this.textTexture(String(Math.round(e.value)), "#ffffff", 128, 96),
-        color: e.color,
+        map: this.textTexture(String(Math.round(e.score)), "#ffffff", 128, 96),
+        color: tier.color,
         depthTest: false,
       });
       const sprite = new THREE.Sprite(material);
       sprite.position.set(e.x - 270, 70, e.y - 420);
-      sprite.scale.set(33, 25, 1);
+      sprite.scale.set(tier.width, tier.height, 1);
       this.world.add(sprite);
       this.effects.push({
         kind: "number",
