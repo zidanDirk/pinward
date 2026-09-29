@@ -304,6 +304,8 @@ export class Game {
       color: TYPES[power].color,
       power,
       toY: monster.y,
+      score: 15 * multiplier * comboMul,
+      comboTier: this.comboTier,
     });
     if (power === "electric" && !chain) {
       const adjacent = this.monsters.filter(
@@ -374,14 +376,17 @@ export class Game {
     boss.hp -= amount;
     boss.flash = 0.12;
     this.hits++;
+    const lethal = boss.hp <= 0;
     this.emit("hit", {
       x: boss.x,
       y: boss.y,
       value: amount,
       color: TYPES[power].color,
       power,
+      score: lethal ? null : 35,
+      comboTier: 0,
     });
-    if (boss.hp <= 0) {
+    if (lethal) {
       this.score += 3000;
       this.registerKill();
       this.finish(true);

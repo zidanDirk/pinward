@@ -443,6 +443,81 @@ test("boss hit and finish scores ignore combo multiplier", () => {
   assert.equal(game.comboCount, 6);
 });
 
+test("hit event carries score and comboTier snapshot for combo ×2 electric kill", () => {
+  const game = new Game();
+  game.comboCount = 5;
+  game.comboTier = comboTierFor(5);
+  const m = createMonster(game.nextId++, "normal", 1, 4);
+  m.hp = 1;
+  game.monsters = [m];
+  game.damage(m, 1, "electric");
+  const hits = game.events.filter((e) => e.type === "hit");
+  assert.ok(hits.length >= 1);
+  // 连锁 ≥1 时取最后一条，校验 payload 含 score / comboTier 字段且值符合 15 * 1.5 * comboMul
+  const last = hits[hits.length - 1];
+  assert.equal(last.score, 45);
+  assert.equal(last.comboTier, 2);
+});
+
+test("standard hit score is 15 with comboTier 0 and 1, both ×1", () => {
+  for (const tier of [0, 1]) {
+    const game = new Game();
+    game.comboTier = tier;
+    const m = createMonster(game.nextId++, "normal", 1, 4);
+    m.hp = 5;
+    game.monsters = [m];
+    game.damage(m, 1, "standard");
+    const hits = game.events.filter((e) => e.type === "hit");
+    assert.equal(hits[hits.length - 1].score, 15);
+    assert.equal(hits[hits.length - 1].comboTier, tier);
+  }
+});
+
+test("damageBoss hit carries score 35 / comboTier 0 ignoring game.comboTier, lethal hit nulls score", () => {
+  const game = new Game();
+  game.beginBoss();
+  game.comboCount = 5;
+  game.comboTier = 4;
+  const before = game.score;
+  game.damageBoss(10, "electric");
+  const midHits = game.events.filter((e) => e.type === "hit");
+  assert.equal(midHits[midHits.length - 1].score, 35);
+  assert.equal(midHits[midHits.length - 1].comboTier, 0);
+  // 非致命命中：当局总分只 +35，不乘 comboMul
+  assert.equal(game.score - before, 35);
+  game.damageBoss(999, "standard");
+  const allHits = game.events.filter((e) => e.type === "hit");
+  // 致命一击只发一次 hit，score 固定 null
+  assert.equal(allHits[allHits.length - 1].score, null);
+  assert.equal(allHits[allHits.length - 1].comboTier, 0);
+  // 终局击杀只 +3000，不再叠加命中分
+  assert.equal(game.score - before, 35 + 3000);
+  assert.equal(game.phase, "over");
+  assert.equal(game.won, true);
+  assert.equal(game.comboCount, 6);
+});
+
+test("electric chain emits multiple hits each carrying score and comboTier", () => {
+  const game = new Game();
+  game.comboTier = 1;
+  const a = createMonster(game.nextId++, "normal", 1, 4);
+  const b = createMonster(game.nextId++, "normal", 1, 5);
+  a.y = 500;
+  b.y = 500;
+  a.hp = 1;
+  b.hp = 1;
+  game.monsters = [a, b];
+  // amount=2 让连锁 1.4 仍 ≥1，hp=1 的相邻怪死于同帧
+  game.damage(a, 2, "electric");
+  const hits = game.events.filter((e) => e.type === "hit");
+  assert.ok(hits.length >= 2);
+  // 连锁发生在 registerKill() 之前，整条锁都带同一档位的 score / comboTier
+  for (const hit of hits) {
+    assert.equal(hit.score, 15 * 1.5);
+    assert.equal(hit.comboTier, 1);
+  }
+});
+
 test("beginWave and changeBossStage silently reset combo fields without events", () => {
   const game = new Game({ rng: seededRandom(3) });
   // 直接喂一个低血量怪物制造一次击杀拉起连击
