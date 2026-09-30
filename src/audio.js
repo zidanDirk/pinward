@@ -73,6 +73,7 @@ export class ArcadeAudio {
       this.tone(540, 0.1, "sine", 0.05, 720);
     else if (event.type === "bossStage")
       this.tone(75, 0.7, "sawtooth", 0.05, 150);
+    else if (event.type === "bossPulseWarn") this.tone(180, 0.12, "sine", 0.04, 120);
     else if (event.type === "over")
       this.tone(
         event.won ? 880 : 180,

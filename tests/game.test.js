@@ -1264,3 +1264,73 @@ test("damageBoss path never triggers skill shot and boss kill reward stays 3000"
     1,
   );
 });
+
+test("beginBoss 之后 boss.pulseIn 为 12 且 phase === 'boss'，作为 HUD 满格与重开自愈的数据源", () => {
+  const game = new Game();
+  assert.equal(game.boss, null);
+  game.beginBoss();
+  assert.equal(game.phase, "boss");
+  assert.ok(game.boss);
+  assert.equal(game.boss.pulseIn, 12);
+});
+
+test("updateBoss 递减 pulseIn 并在 <=0 时回卷 +12：恰好 emit 一次 bossPulse 且 HP -1", () => {
+  const game = new Game();
+  game.beginBoss();
+  game.hp = 10;
+  // 逐帧推进：每次减少 STEP
+  const start = game.boss.pulseIn;
+  game.updateBoss(STEP);
+  assert.equal(game.boss.pulseIn, start - STEP);
+  // 把 pulseIn 置为 0：再次调用 updateBoss 应回卷到 12 - STEP
+  game.boss.pulseIn = 0;
+  game.events = [];
+  const hpBefore = game.hp;
+  game.updateBoss(STEP);
+  assert.equal(game.boss.pulseIn, 12 - STEP);
+  assert.ok(game.boss.pulseIn < 12);
+  assert.equal(
+    game.events.filter((e) => e.type === "bossPulse").length,
+    1,
+  );
+  // BOSS 阶段无护盾：脉冲触底直接扣 1 HP
+  assert.equal(game.hp, hpBefore - 1);
+});
+
+test("暂停时 boss.pulseIn 冻结，恢复后从冻结处继续", () => {
+  const game = new Game();
+  game.beginBoss();
+  // 本用例只验证暂停语义；关闭 beginBoss/changeBossStage 带来的开场慢动作。
+  game.slowTime = 0;
+  const before = game.boss.pulseIn;
+  game.paused = true;
+  game.update(STEP);
+  game.update(STEP);
+  assert.equal(game.boss.pulseIn, before);
+  // 恢复推进：应继续从冻结值递减
+  game.paused = false;
+  game.update(STEP);
+  assert.equal(game.boss.pulseIn, before - STEP);
+});
+
+test("连续两个完整周期恰好 emit 两次 bossPulse，且每个周期末 pulseIn 回到接近满格", () => {
+  const game = new Game();
+  game.beginBoss();
+  // 本用例验证 12 秒 pulse 周期本身，不把 BOSS 入场 slowTime 计入 24 秒计时。
+  game.slowTime = 0;
+  // 拉高 HP 并清空机制刷出的怪物，避免连锁 leak 把 hp 砸到 0 触发 finish(false)
+  game.hp = 100;
+  game.events = [];
+  // 两个完整 12 秒周期 = 24 秒
+  const steps = Math.round(24 / STEP);
+  for (let i = 0; i < steps; i++) {
+    game.updateBoss(STEP);
+  }
+  const pulses = game.events.filter((e) => e.type === "bossPulse").length;
+  assert.equal(pulses, 2);
+  // 推进到本帧最后一步：pulseIn 应回到接近满格（>= 12 - STEP）
+  assert.ok(
+    game.boss.pulseIn >= 12 - STEP,
+    `pulseIn 期望接近满格，实际 ${game.boss.pulseIn}`,
+  );
+});
