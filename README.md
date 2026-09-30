@@ -74,6 +74,18 @@ TEST_BROWSER=WebKit PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs nod
 
 测试输出与截图保存在已忽略的 `test-results/`。平台覆盖、性能测量与未实测项见 [验证记录](docs/validation.md)。
 
+## 自动化与事故记录
+
+PINWARD 的自动维护流水线采用 Research → Proposal → Split → Implementation → Verification → PR → Maintenance 的分阶段安全模型。自动化不会自动合并 Pull Request。
+
+常用运维文档：
+
+- [BLOCKED Implementation Task 恢复 Runbook](docs/runbooks/blocked-task-recovery.md)
+- [2026-09-30 Issue #79 Repair Agent 耗尽与恢复](docs/incidents/2026-09-30-issue-79-repair-exhaustion-and-recovery.md)
+- [2026-09-29 Proposal 与现有代码契约冲突](docs/incidents/2026-09-29-proposal-code-contract-conflict.md)
+- [2026-09-27 Proposal Block 与 Dirty Base Repository 恢复](docs/incidents/2026-09-27-proposal-block-and-dirty-base-recovery.md)
+- [2026-09-24 Research Agent 校验失败](docs/incidents/2026-09-24-research-validation-failure.md)
+
 ## 结构
 
 | 文件                            | 职责                                                   |
