@@ -986,6 +986,35 @@ kbd {
   transform-origin: left;
   transition: transform 0.1s;
 }
+.boss-pulse-track {
+  height: 6px;
+  background: #ede0f1;
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.boss-pulse-track i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: var(--blue);
+  transform-origin: left;
+  transform: scaleX(1);
+  transition: transform 0.1s;
+}
+.boss-pulse-track.warning i {
+  background: #e05a5a;
+  animation: boss-pulse-tick 0.6s ease-in-out infinite;
+}
+@keyframes boss-pulse-tick {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
 .boss-banner {
   position: absolute;
   top: 40%;

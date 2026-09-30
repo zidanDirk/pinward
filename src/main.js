@@ -25,6 +25,7 @@ let tool = "place",
   toastTime = 0,
   bannerTime = 0,
   lastPhase = "",
+  lastPulseWarned = false,
   recorded = false;
 let previousTime = performance.now(),
   accumulator = 0;
@@ -135,6 +136,21 @@ function updateUI(force = false) {
       `scaleX(${Math.max(0, game.boss.hp / game.boss.maxHp)})`;
     $("boss-stage-label").textContent =
       `${game.boss.stage + 1} / 3 · ${BOSS_PHASES[game.boss.order[game.boss.stage]].name}`;
+    // 脉冲倒计时条：仅在 BOSS 阶段同步 game.boss.pulseIn，避免结算后仍写入。
+    if (game.phase === "boss") {
+      const pulseIn = Math.max(0, game.boss.pulseIn);
+      $("boss-pulse-bar").style.transform =
+        `scaleX(${Math.min(1, pulseIn / 12)})`;
+      const track = $("boss-pulse-track");
+      track.classList.toggle("warning", pulseIn < 3);
+      track.setAttribute("aria-valuenow", String(Math.round(pulseIn)));
+      if (pulseIn < 1.5) {
+        if (!lastPulseWarned) {
+          lastPulseWarned = true;
+          game.emit("bossPulseWarn");
+        }
+      } else lastPulseWarned = false;
+    }
   }
   $("start-overlay").hidden = game.phase !== "build";
   $("start-choice").hidden = !game.choiceUnlocked;
@@ -260,6 +276,7 @@ function newGame(instant) {
   });
   game.startChoice = $("initial-type").value;
   lastPhase = "";
+  lastPulseWarned = false;
   recorded = false;
   accumulator = 0;
   renderer.reset();
