@@ -5,6 +5,7 @@ import { TYPES } from "./cards.js";
 import { STEP, clamp } from "./physics.js";
 import { BOSS_PHASES } from "./waves.js";
 import { readProfile, saveProfile, recordRun, buyUpgrade } from "./storage.js";
+import { MONSTERS } from "./entities.js";
 
 const $ = (id) => document.getElementById(id);
 let storage;
@@ -24,9 +25,12 @@ let tool = "place",
   uiTime = 0,
   toastTime = 0,
   bannerTime = 0,
+  wavePreviewTime = 0,
+  wavePreviewFadeTimer = null,
   lastPhase = "",
   lastPulseWarned = false,
   recorded = false;
+const motionReduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let previousTime = performance.now(),
   accumulator = 0;
 let modalWasRunning = false;
@@ -282,6 +286,15 @@ function newGame(instant) {
   renderer.reset();
   bannerTime = 0;
   $("boss-banner").hidden = true;
+  wavePreviewTime = 0;
+  if (wavePreviewFadeTimer) {
+    clearTimeout(wavePreviewFadeTimer);
+    wavePreviewFadeTimer = null;
+  }
+  const preview = $("wave-preview");
+  preview.hidden = true;
+  preview.classList.remove("fading");
+  preview.replaceChildren();
   $("aim").value = "0";
   $("aim-value").textContent = "0°";
   setTool("place");
@@ -680,12 +693,44 @@ function processEvents() {
     renderer.event(event);
     audio.event(event);
     if (event.type === "bounce") vibrate();
-    if (event.type === "wave")
+    if (event.type === "wave") {
       toast(
         event.wave === 1
           ? "第一波来袭。弹球已自动发射。"
           : `第 ${event.wave} 波来袭`,
       );
+      // 波次来袭预览：图标行 + 1.5 秒计时 + 减少动效直隐。
+      const preview = $("wave-preview");
+      if (wavePreviewFadeTimer) {
+        clearTimeout(wavePreviewFadeTimer);
+        wavePreviewFadeTimer = null;
+      }
+      preview.replaceChildren();
+      preview.classList.remove("fading");
+      preview.hidden = false;
+      const composition = event.composition || {};
+      for (const type of ["normal", "swift", "tank", "bomb"]) {
+        const count = composition[type];
+        if (!count) continue;
+        const data = MONSTERS[type];
+        if (!data) continue;
+        const cell = document.createElement("span");
+        cell.className = "wave-preview-cell";
+        cell.style.setProperty("--preview-color", data.color);
+        const dot = document.createElement("i");
+        dot.className = "wave-preview-dot";
+        dot.setAttribute("aria-hidden", "true");
+        const label = document.createElement("b");
+        label.className = "wave-preview-name";
+        label.textContent = data.name;
+        const countEl = document.createElement("em");
+        countEl.className = "wave-preview-count";
+        countEl.textContent = `×${count}`;
+        cell.append(dot, label, countEl);
+        preview.append(cell);
+      }
+      wavePreviewTime = 1.5;
+    }
     if (event.type === "card") {
       setTool("place");
       toast(`${TYPES[event.card].name}反弹器已入库，点击空格放置。`);
@@ -732,6 +777,24 @@ function frame(now) {
   if (toastTime <= 0) $("toast").classList.remove("visible");
   if (!game.paused) bannerTime -= dt;
   if (bannerTime <= 0) $("boss-banner").hidden = true;
+  if (!game.paused) wavePreviewTime -= dt;
+  if (wavePreviewTime <= 0) {
+    wavePreviewTime = 0;
+    const preview = $("wave-preview");
+    if (!preview.hidden && !preview.classList.contains("fading")) {
+      if (motionReduced) {
+        preview.hidden = true;
+        preview.classList.remove("fading");
+      } else {
+        preview.classList.add("fading");
+        wavePreviewFadeTimer = setTimeout(() => {
+          preview.hidden = true;
+          preview.classList.remove("fading");
+          wavePreviewFadeTimer = null;
+        }, 250);
+      }
+    }
+  }
   uiTime += dt;
   if (uiTime >= 0.1 || lastPhase !== game.phase) {
     updateUI();

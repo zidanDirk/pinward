@@ -1045,6 +1045,64 @@ kbd {
   font-size: 11px;
   color: #78677e;
 }
+/* 波次来袭预览：图标行 + 1.5 秒计时，与 boss-banner 同层级 overlay，不重叠。 */
+.wave-preview {
+  position: absolute;
+  top: 8%;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  z-index: 5;
+  background: #fffdf3ef;
+  border: 2px solid white;
+  border-radius: 18px;
+  padding: 10px 14px;
+  pointer-events: none;
+  width: max-content;
+  max-width: 90%;
+  box-shadow: 0 6px 22px #33306220;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+.wave-preview.fading {
+  opacity: 0;
+}
+.wave-preview-cell {
+  --preview-color: #b4afff;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #4a4063;
+}
+.wave-preview-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--preview-color);
+  box-shadow:
+    inset 0 -2px 0 #0000001a,
+    0 1px 0 #0000000a;
+}
+.wave-preview-name {
+  font-weight: 700;
+  font-size: 12px;
+  color: #4a4063;
+}
+.wave-preview-count {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #f0eff7;
+  color: #6f658e;
+}
 .pause-overlay,
 .render-error {
   position: absolute;
@@ -2108,6 +2166,27 @@ dialog h2 {
   }
   .boss-banner span {
     font-size: 10px;
+  }
+  .wave-preview {
+    padding: 7px 10px;
+    gap: 6px;
+    border-radius: 14px;
+    max-width: 92%;
+  }
+  .wave-preview-cell {
+    font-size: 10px;
+    gap: 4px;
+  }
+  .wave-preview-dot {
+    width: 10px;
+    height: 10px;
+  }
+  .wave-preview-name {
+    font-size: 10px;
+  }
+  .wave-preview-count {
+    font-size: 9px;
+    padding: 1px 5px;
   }
   dialog {
     padding: 27px 18px;
