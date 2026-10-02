@@ -1334,3 +1334,87 @@ test("连续两个完整周期恰好 emit 两次 bossPulse，且每个周期末 
     `pulseIn 期望接近满格，实际 ${game.boss.pulseIn}`,
   );
 });
+
+// wave 事件 composition 测试辅助：构造「偶数位 roll、奇数位 col=0」的固定序列 rng，
+// 这样可以直接预测 wavePlan 的逐项类型，无需依赖具体种子。
+const rollingRng = (roll) => {
+  let i = 0;
+  return () => (i++ % 2 === 0 ? roll : 0);
+};
+
+test("beginWave wave 事件恰好一次且 composition 全 normal 时为 { normal: 8 }", () => {
+  const game = new Game({ rng: seededRandom(7) });
+  game.beginWave();
+  assert.equal(game.wave, 1);
+  // wave < 3 不可能产出 swift/tank/bomb，composition 必定只剩 normal
+  assert.equal(game.plan.length, 8);
+  const waveEvents = game.events.filter((e) => e.type === "wave");
+  assert.equal(waveEvents.length, 1);
+  assert.equal(waveEvents[0].wave, 1);
+  assert.deepEqual(waveEvents[0].composition, { normal: 8 });
+});
+
+test("beginWave composition 含 swift 时仅保留 swift 计数且总和等于 plan.length", () => {
+  // wave 5：count = 12；roll < 0.43 → 全 swift
+  const game = new Game({ rng: rollingRng(0.3) });
+  game.wave = 4;
+  game.beginWave();
+  assert.equal(game.wave, 5);
+  assert.equal(game.plan.length, 12);
+  const evt = game.events.find((e) => e.type === "wave");
+  assert.ok(evt);
+  assert.deepEqual(evt.composition, { swift: 12 });
+  const sum = Object.values(evt.composition).reduce((a, b) => a + b, 0);
+  assert.equal(sum, game.plan.length);
+  assert.equal(
+    Object.values(evt.composition).some((c) => c <= 0),
+    false,
+  );
+});
+
+test("beginWave composition 含 tank 时仅保留 tank 计数且总和等于 plan.length", () => {
+  // wave 3：count = 10；0.43 <= roll < 0.65 → 全 tank
+  const game = new Game({ rng: rollingRng(0.5) });
+  game.wave = 2;
+  game.beginWave();
+  assert.equal(game.wave, 3);
+  assert.equal(game.plan.length, 10);
+  const evt = game.events.find((e) => e.type === "wave");
+  assert.ok(evt);
+  assert.deepEqual(evt.composition, { tank: 10 });
+  const sum = Object.values(evt.composition).reduce((a, b) => a + b, 0);
+  assert.equal(sum, game.plan.length);
+  assert.equal(
+    Object.values(evt.composition).some((c) => c <= 0),
+    false,
+  );
+});
+
+test("beginWave composition 含 bomb 时仅保留 bomb 计数且总和等于 plan.length", () => {
+  // wave 9：count = 16；roll < 0.22 → 全 bomb
+  const game = new Game({ rng: rollingRng(0.1) });
+  game.wave = 8;
+  game.beginWave();
+  assert.equal(game.wave, 9);
+  assert.equal(game.plan.length, 16);
+  const evt = game.events.find((e) => e.type === "wave");
+  assert.ok(evt);
+  assert.deepEqual(evt.composition, { bomb: 16 });
+  const sum = Object.values(evt.composition).reduce((a, b) => a + b, 0);
+  assert.equal(sum, game.plan.length);
+  assert.equal(
+    Object.values(evt.composition).some((c) => c <= 0),
+    false,
+  );
+});
+
+test("beginBoss 之后 events 中不存在任何 wave 事件", () => {
+  const game = new Game({ rng: seededRandom(11) });
+  game.events = [];
+  game.beginBoss();
+  assert.equal(game.phase, "boss");
+  assert.equal(
+    game.events.some((e) => e.type === "wave"),
+    false,
+  );
+});

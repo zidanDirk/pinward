@@ -144,7 +144,14 @@ export class Game {
     // 跨波静默复位精准一击窗口：避免上一球残留窗口延续到下一球。
     this.skillShotWindow = 0;
     this.skillShotConsumed = false;
-    this.emit("wave", { wave: this.wave });
+    // 按 plan 逐类型累加 composition：键为 normal/swift/tank/bomb，仅保留计数 > 0 的类型，
+    // 作为本波怪物构成快照随 wave 事件下发，供 HUD / #wave-preview 使用，
+    // beginBoss 不会发送 wave 事件，因此不会带来 BOSS 阶段的 composition。
+    const composition = {};
+    for (const item of this.plan) {
+      composition[item.type] = (composition[item.type] || 0) + 1;
+    }
+    this.emit("wave", { wave: this.wave, composition });
   }
 
   beginBoss() {
