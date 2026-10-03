@@ -6,6 +6,7 @@ import { STEP, clamp } from "./physics.js";
 import { BOSS_PHASES } from "./waves.js";
 import { readProfile, saveProfile, recordRun, buyUpgrade } from "./storage.js";
 import { MONSTERS } from "./entities.js";
+import { getSkillShotHudState } from "./hud.js";
 
 const $ = (id) => document.getElementById(id);
 let storage;
@@ -222,6 +223,13 @@ function updateUI(force = false) {
     shieldAvailable ? "本波护盾可用" : "本波护盾已用尽",
   );
   $("shield-count").textContent = `×${shieldLeft}`;
+  // 精准一击倒计时徽章：10Hz 的 updateUI 刷新节奏，与 combo / shield 徽章同等节奏。
+  const skillShot = getSkillShotHudState(
+    game.skillShotWindow,
+    game.skillShotConsumed,
+  );
+  $("skill-shot-badge").hidden = skillShot.hidden;
+  $("skill-shot-text").textContent = skillShot.text;
   if (force || lastPhase !== game.phase) {
     if (game.phase === "reward") showRewards();
     else if ($("reward-dialog").open) $("reward-dialog").close();
