@@ -949,6 +949,28 @@ kbd {
   display: block;
   font-weight: 900;
 }
+/* 精准一击倒计时徽章：取 .combo 的左侧镜像位，与 .combo / .boss-hud /
+   .wave-preview / .selection-toolbar / .toast 均不重叠；仅复用现有调色板。 */
+.skill-shot-badge {
+  position: absolute;
+  left: 27px;
+  top: 90px;
+  z-index: 3;
+  pointer-events: none;
+  transform: rotate(-9deg);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--lime);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 12px #29254b18;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+  white-space: nowrap;
+}
 .boss-hud {
   position: absolute;
   left: 17%;
