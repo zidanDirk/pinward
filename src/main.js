@@ -6,7 +6,7 @@ import { STEP, clamp } from "./physics.js";
 import { BOSS_PHASES } from "./waves.js";
 import { readProfile, saveProfile, recordRun, buyUpgrade } from "./storage.js";
 import { MONSTERS } from "./entities.js";
-import { getSkillShotHudState } from "./hud.js";
+import { getSkillShotHudState, hpWarningTier } from "./hud.js";
 
 const $ = (id) => document.getElementById(id);
 let storage;
@@ -105,7 +105,13 @@ function updateUI(force = false) {
   [...$("hp-pips").children].forEach((pip, i) =>
     pip.classList.toggle("empty", i >= game.hp),
   );
-  $("hp-pips").classList.toggle("low", game.hp <= 3);
+  // 低血量三档反馈：互斥布尔 toggle，避免 10Hz 的 updateUI 每帧重启 CSS 动画。
+  const hpTier = hpWarningTier(game.hp);
+  const hpPips = $("hp-pips");
+  hpPips.classList.toggle("low", hpTier === "low");
+  hpPips.classList.toggle("urgent", hpTier === "urgent");
+  hpPips.classList.toggle("critical", hpTier === "critical");
+  $("hp").classList.toggle("shaking", hpTier === "critical");
   $("bumper-count").innerHTML =
     `${String(game.bumpers.length).padStart(2, "0")}<span> / 18</span>`;
   document.querySelectorAll("[data-type]").forEach((button) => {
