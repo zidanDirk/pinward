@@ -372,6 +372,27 @@ a {
   font-weight: 600;
   color: var(--muted);
 }
+#hp.shaking {
+  display: inline-block;
+  animation: hp-shake 0.1s ease-in-out;
+}
+@keyframes hp-shake {
+  0% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-1px);
+  }
+  50% {
+    transform: translateX(1px);
+  }
+  75% {
+    transform: translateX(-1px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
 .hp-pips {
   display: flex;
   gap: 4px;
@@ -388,6 +409,24 @@ a {
 }
 .hp-pips.low i:not(.empty) {
   background: #ef7caa;
+}
+.hp-pips.urgent i:not(.empty) {
+  background: #ef5d7a;
+  animation: hp-warn-pulse 1.2s ease-in-out infinite;
+}
+.hp-pips.critical i:not(.empty) {
+  background: #e5457a;
+  animation: hp-warn-pulse 0.6s ease-in-out infinite;
+}
+@keyframes hp-warn-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.18);
+    filter: saturate(1.4);
+  }
 }
 .score-row {
   display: flex;
